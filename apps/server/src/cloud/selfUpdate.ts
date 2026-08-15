@@ -24,6 +24,7 @@ import {
 import { decodeServicePreflightResult } from "./servicePreflight.ts";
 import * as ServiceLauncherClient from "./serviceLauncherClient.ts";
 import { isExactServiceVersion, SERVICE_LAUNCHER_PROTOCOL } from "./serviceProtocol.ts";
+import { CLI_PACKAGE_NAME } from "../packageIdentity.ts";
 
 const PREFLIGHT_TIMEOUT = Duration.seconds(30);
 
@@ -77,7 +78,7 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
 
     const targetVersion = input.targetVersion.trim();
     if (!isExactServiceVersion(targetVersion)) {
-      return yield* failWith(`'${targetVersion}' is not an exact t3 version.`);
+      return yield* failWith(`'${targetVersion}' is not an exact ${CLI_PACKAGE_NAME} version.`);
     }
     if (yield* Ref.getAndSet(inFlight, true)) {
       return yield* failWith("A server update is already in progress.");
@@ -164,7 +165,7 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
         Effect.mapError((error) =>
           error._tag === "PinnedRuntimePreflightBlockedError"
             ? failWith(error.reason, error)
-            : failWith(`Could not prepare t3@${targetVersion}.`, error),
+            : failWith(`Could not prepare ${CLI_PACKAGE_NAME}@${targetVersion}.`, error),
         ),
       );
 

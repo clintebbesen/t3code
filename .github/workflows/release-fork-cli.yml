@@ -1,0 +1,138 @@
+name: Release Fork CLI
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: release-fork-cli
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Publish the manual fork CLI release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: |
+            args:
+              - --filter=t3...
+              - --filter=@t3tools/web...
+              - --filter=@t3tools/scripts...
+
+      - name: Resolve fork package and release version
+        id: release_meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_name="$(node -p "require('./apps/server/package.json').t3code?.distributionPackage || ''")"
+          base_version="$(node -p "require('./apps/server/package.json').version.split('-')[0]")"
+          if [[ -z "$package_name" ]]; then
+            echo "apps/server/package.json must declare t3code.distributionPackage." >&2
+            exit 1
+          fi
+          if [[ ! "$package_name" =~ ^(@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*$ ]]; then
+            echo "Invalid npm package name: $package_name" >&2
+            exit 1
+          fi
+          if [[ ! "$base_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "The server package must start from a stable SemVer version; received $base_version." >&2
+            exit 1
+          fi
+          version="${base_version}-fork.$(date -u +%Y%m%d).${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}"
+          previous_version="$(npm view "$package_name@latest" version 2>/dev/null || true)"
+          echo "package_name=$package_name" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "previous_version=$previous_version" >> "$GITHUB_OUTPUT"
+          echo "Publishing $package_name@$version"
+
+      - name: Align package versions
+        run: node scripts/update-release-package-versions.ts "${{ steps.release_meta.outputs.version }}"
+
+      - name: Build web bundle
+        run: vp run --filter @t3tools/web build
+
+      - name: Build CLI bundle
+        run: vp run --filter t3 build
+
+      - name: Build Linux resource monitor
+        run: |
+          set -euo pipefail
+          cargo build --locked --release --manifest-path native/resource-monitor/Cargo.toml
+          target_dir="apps/server/dist/resource-monitor/linux-x64"
+          mkdir -p "$target_dir"
+          cp native/resource-monitor/target/release/t3-resource-monitor "$target_dir/"
+          chmod +x "$target_dir/t3-resource-monitor"
+
+      - name: Validate npm package contents
+        run: |
+          node apps/server/scripts/cli.ts publish \
+            --tag latest \
+            --access public \
+            --app-version "${{ steps.release_meta.outputs.version }}" \
+            --dry-run \
+            --verbose
+
+      - name: Publish fork CLI to npm
+        run: |
+          node apps/server/scripts/cli.ts publish \
+            --tag latest \
+            --access public \
+            --app-version "${{ steps.release_meta.outputs.version }}" \
+            --provenance \
+            --verbose
+
+      - name: Read back npm latest
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_name="${{ steps.release_meta.outputs.package_name }}"
+          expected="${{ steps.release_meta.outputs.version }}"
+          previous="${{ steps.release_meta.outputs.previous_version }}"
+          published=""
+          for attempt in 1 2 3 4 5 6; do
+            echo "Checking npm latest ($attempt/6)..."
+            published="$(npm view "$package_name@latest" version 2>/dev/null || true)"
+            [[ "$published" == "$expected" ]] && break
+            sleep 5
+          done
+          [[ "$published" == "$expected" ]] || {
+            echo "npm latest points to $published, expected $expected." >&2
+            exit 1
+          }
+          {
+            echo "## Fork CLI release"
+            echo
+            echo "Published \`$package_name@$expected\` to npm dist-tag \`latest\`."
+            echo
+            echo "Manual install/update command per LXC:"
+            echo
+            echo '```sh'
+            echo "npx -y $package_name@latest service update"
+            echo '```'
+            echo
+            echo "Exact-version install:"
+            echo
+            echo '```sh'
+            echo "npx -y $package_name@$expected service update"
+            echo '```'
+            if [[ -n "$previous" ]]; then
+              echo
+              echo "Rollback to the previous latest release:"
+              echo
+              echo '```sh'
+              echo "npx -y $package_name@$previous service update"
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

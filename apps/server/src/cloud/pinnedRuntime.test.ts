@@ -8,6 +8,7 @@ import * as Path from "effect/Path";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 
 import * as ProcessRunner from "../processRunner.ts";
+import { CLI_PACKAGE_PATH_SEGMENTS, cliPackageSpec } from "../packageIdentity.ts";
 import {
   ensurePinnedRuntimeInstalled,
   pinnedRuntimePaths,
@@ -21,7 +22,13 @@ const successfulRunner = (fs: FileSystem.FileSystem, path: Path.Path) =>
         const prefixIndex = input.args.indexOf("--prefix");
         const stagingDir = input.args[prefixIndex + 1];
         if (stagingDir === undefined) return yield* Effect.die("missing npm --prefix");
-        const entry = path.join(stagingDir, "node_modules", "t3", "dist", "bin.mjs");
+        const entry = path.join(
+          stagingDir,
+          "node_modules",
+          ...CLI_PACKAGE_PATH_SEGMENTS,
+          "dist",
+          "bin.mjs",
+        );
         yield* fs.makeDirectory(path.dirname(entry), { recursive: true }).pipe(Effect.orDie);
         yield* fs.writeFileString(entry, "export {};\n").pipe(Effect.orDie);
         return {
@@ -64,6 +71,7 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
       assert.deepEqual(installed, finalPaths);
       assert.isTrue(yield* fs.exists(finalPaths.entryPath));
       assert.equal(yield* fs.readFileString(finalPaths.sentinelPath), "1.2.3\n");
+      assert.equal(cliPackageSpec("1.2.3"), "t3code-clintebbesen@1.2.3");
     }),
   );
 

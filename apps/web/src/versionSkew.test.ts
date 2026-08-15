@@ -7,6 +7,7 @@ import {
   buildVersionMismatchDismissalKey,
   dismissVersionMismatch,
   isVersionMismatchDismissed,
+  manualServerUpdateCommand,
   resolveServerConfigVersionMismatch,
   resolveServerSelfUpdateCapability,
   resolveVersionMismatch,
@@ -105,6 +106,12 @@ describe("versionSkew", () => {
     );
     expect(serverUpdateGuidance(null, "Local server")).toBe(
       "Relaunch the Local server with the copied command to sync them.",
+    );
+  });
+
+  it("copies the exact fork package command for manual server updates", () => {
+    expect(manualServerUpdateCommand("1.2.3-fork.4")).toBe(
+      "npx -y t3code-clintebbesen@1.2.3-fork.4",
     );
   });
 });

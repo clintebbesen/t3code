@@ -1,2 +1,5 @@
 # git autocrlf=true converts LF to CRLF on Windows, causing issues with oxfmt
 * text=auto eol=lf
+
+# The journal index is append-only; concurrent branches must retain both rows.
+docs/journal/INDEX.md merge=union

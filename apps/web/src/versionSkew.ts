@@ -1,8 +1,11 @@
 import type { EnvironmentId, ServerConfig, ServerSelfUpdateCapability } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
+import serverPackageJson from "../../server/package.json" with { type: "json" };
 
 import { APP_VERSION } from "./branding";
 import { getLocalStorageItem, setLocalStorageItem } from "./hooks/useLocalStorage";
+
+const CLI_PACKAGE_NAME = serverPackageJson.t3code?.distributionPackage || serverPackageJson.name;
 
 export interface VersionMismatch {
   readonly clientVersion: string;
@@ -59,7 +62,7 @@ export function resolveServerSelfUpdateCapability(
 
 /** The command to hand users whose server cannot update itself. */
 export function manualServerUpdateCommand(targetVersion: string): string {
-  return `npx t3@${targetVersion}`;
+  return `npx -y ${CLI_PACKAGE_NAME}@${targetVersion}`;
 }
 
 /** One sentence telling the user how to resolve version skew for a server,
