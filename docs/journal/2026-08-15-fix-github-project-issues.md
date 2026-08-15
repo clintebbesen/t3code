@@ -101,7 +101,8 @@ Inventory every open work item attached to the repository's GitHub project, fix 
 
 ### Issue #1 / PR #7071
 
-- Branch `fix/provider-command-cross-thread-lockout`, exact head `bf775993843876df3a99e586a697bbf5e5568f8b`, based on upstream `main`.
+- Branch `fix/provider-command-cross-thread-lockout`, exact head
+  `4822cc340af75f7970d7aed582507cd5a68049ee`, based on upstream `main`.
 - Duplicate check before coding: upstream #6517 remains open; #5781 is closed
   with the notification-consumer lifetime fix already in current `main`; #6531,
   #6560, #4944, #4584, and related PRs remain open or separately scoped.
@@ -118,6 +119,14 @@ Inventory every open work item attached to the repository's GitHub project, fix 
 - Fresh external reviewer dispatch was not run for the same no-delegation
   reason; a separated self-review checked the keyed-worker lifecycle, cleanup,
   FIFO, and exact diff.
+- Cursor Bugbot then found a true medium-severity resource-lifecycle gap at
+  [discussion r3789293531](https://github.com/pingdotgg/t3code/pull/7071#discussion_r3789293531):
+  deleting an idle lane did not stop its forever worker fiber. Follow-up commit
+  `4822cc340` gives every lane a child queue scope, closes it after drain, and
+  deliberately provides provider effects the parent reactor scope so existing
+  forked turn work survives lane cleanup. The focused 2-file/47-test run,
+  server/shared typechecks, targeted lint, and exact-head `done-check` all
+  passed again; the inline finding was answered with the fix evidence.
 
 ## Delivery and check status
 
@@ -129,6 +138,11 @@ Inventory every open work item attached to the repository's GitHub project, fix 
   a Vercel authorization URL; PR #7068's repository checks were queued/in
   progress. These are external CI blockers, not locally reproducible failures;
   no claim of green upstream CI is made.
+- A later poll showed every PR #7068 check green. PR #7069's repository review
+  checks are green except for its terminal Vercel authorization failure. PR
+  #7071 restarted checks on `4822cc340`; conventions passed, correctness,
+  Approvability, and Bugbot were still running, and the terminal Vercel
+  authorization failure remained.
 - UI/browser evidence was skipped: none of the delivered diffs changes a UI
   surface, and repository instructions prohibit browser/computer use without
   explicit user permission.
