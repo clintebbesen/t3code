@@ -40,7 +40,7 @@ import {
 
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import * as ServerConfig from "../config.ts";
-import { CLI_PACKAGE_NAME } from "../packageIdentity.ts";
+import { cliNpxCommand } from "../packageIdentity.ts";
 import { resolveBaseDir } from "../os-jank.ts";
 import {
   type PersistedServerRuntimeState,
@@ -79,7 +79,7 @@ export class NoRunningServerError extends Schema.TaggedErrorClass<NoRunningServe
     return [
       "No running T3 Code server found.",
       ...this.checkedStatePaths.map((statePath) => `  checked ${statePath}`),
-      `Start one with \`npx -y ${CLI_PACKAGE_NAME} serve\`, or connect this machine with T3 Connect: \`npx -y ${CLI_PACKAGE_NAME} connect\`.`,
+      `Start one with \`${cliNpxCommand("latest", "serve")}\`, or connect this machine with T3 Connect: \`${cliNpxCommand("latest", "connect")}\`.`,
     ].join("\n");
   }
 }

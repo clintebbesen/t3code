@@ -25,3 +25,7 @@ export function createVpPmPublishArgs(config: PublishCommandConfig): ReadonlyArr
 
   return args;
 }
+
+export function createVpPmPackArgs(outputPath: string): ReadonlyArray<string> {
+  return ["pack", "--filter", SERVER_WORKSPACE_FILTER, "--out", outputPath];
+}

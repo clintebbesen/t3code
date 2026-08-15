@@ -22,7 +22,12 @@ export { shouldBundleCliDependency };
 
 const repoEnv = loadRepoEnv();
 const cliBuildChannel = packageJson.version.includes("-nightly.") ? "nightly" : "latest";
-const cliPackageName = packageJson.t3code?.distributionPackage || packageJson.name;
+const cliDistribution = {
+  packageName: packageJson.t3code?.distributionPackage || packageJson.name,
+  ...(packageJson.t3code?.githubRelease === undefined
+    ? {}
+    : { githubRelease: packageJson.t3code.githubRelease }),
+};
 
 export default mergeConfig(
   baseConfig,
@@ -56,7 +61,7 @@ export default mergeConfig(
         js: "#!/usr/bin/env node\n",
       },
       define: {
-        __T3CODE_BUILD_PACKAGE_NAME__: JSON.stringify(cliPackageName),
+        __T3CODE_BUILD_DISTRIBUTION__: JSON.stringify(cliDistribution),
         __T3CODE_BUILD_CHANNEL__: JSON.stringify(cliBuildChannel),
         __T3CODE_BUILD_RELAY_URL__: JSON.stringify(repoEnv.T3CODE_RELAY_URL?.trim() ?? ""),
         __T3CODE_BUILD_CLERK_PUBLISHABLE_KEY__: JSON.stringify(

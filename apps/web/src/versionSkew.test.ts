@@ -111,7 +111,7 @@ describe("versionSkew", () => {
 
   it("copies the exact fork package command for manual server updates", () => {
     expect(manualServerUpdateCommand("1.2.3-fork.4")).toBe(
-      "npx -y t3code-clintebbesen@1.2.3-fork.4",
+      "npx -y --prefer-online --package=https://github.com/clintebbesen/t3code/releases/download/fork-cli-v1.2.3-fork.4/t3code-clintebbesen.tgz -- t3",
     );
   });
 });

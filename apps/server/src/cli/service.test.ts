@@ -25,7 +25,7 @@ it("reports the installed service version and host paths", () => {
 it("gives a direct repair command for a stale service", () => {
   assert.include(
     formatServiceStatus({ ...status, current: false }, "0.0.29"),
-    "Next: Run `npx -y t3code-clintebbesen@latest service update`.",
+    "Next: Run `npx -y --prefer-online --package=https://github.com/clintebbesen/t3code/releases/download/fork-cli-latest/t3code-clintebbesen.tgz -- t3 service update`.",
   );
 });
 

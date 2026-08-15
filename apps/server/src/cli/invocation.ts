@@ -3,7 +3,12 @@ import * as Effect from "effect/Effect";
 import { HostProcessArguments } from "@t3tools/shared/hostProcess";
 
 import packageJson from "../../package.json" with { type: "json" };
-import { CLI_PACKAGE_NAME } from "../packageIdentity.ts";
+import {
+  CLI_DISTRIBUTION,
+  CLI_PACKAGE_NAME,
+  cliLatestInstallSpec,
+  cliNpxCommand,
+} from "../packageIdentity.ts";
 
 export type CliRunner = "npx" | "pnpm dlx" | "bunx";
 
@@ -38,20 +43,21 @@ export function detectCliRunner(entryPath: string): CliRunner | null {
 }
 
 /**
- * The CLI package spec to suggest. The literal spec the user typed (e.g.
- * `<cli-package>@nightly` is resolved away before our process starts, so re-derive it
- * from the running version: nightly builds re-suggest the nightly channel,
- * anything else suggests the bare package.
+ * The CLI install spec to suggest. The literal spec the user typed is resolved
+ * away before our process starts, so use the stable GitHub Release alias when
+ * configured; registry builds otherwise retain their nightly-channel behavior.
  */
 export function suggestedPackageSpec(version: string): string {
+  if (CLI_DISTRIBUTION.githubRelease !== undefined) {
+    return cliLatestInstallSpec();
+  }
   return version.includes("-nightly.") ? `${CLI_PACKAGE_NAME}@nightly` : CLI_PACKAGE_NAME;
 }
 
 /**
- * Render a `t3 <subcommand>` suggestion that matches how this process was
- * launched, so copy/pasting it actually works: an npx launch suggests the
- * matching npx command, a global install suggests a direct command, and a nightly build
- * keeps the `@nightly` tag.
+ * Render a `t3 <subcommand>` suggestion that can recreate this invocation.
+ * GitHub archives use npm's explicit package form; registry packages retain
+ * their detected runner, while global installs use the direct command.
  */
 export function formatCliCommand(input: {
   readonly subcommand: string;
@@ -61,6 +67,9 @@ export function formatCliCommand(input: {
   const runner = detectCliRunner(input.entryPath);
   if (runner === null) {
     return `t3 ${input.subcommand}`;
+  }
+  if (CLI_DISTRIBUTION.githubRelease !== undefined) {
+    return cliNpxCommand("latest", input.subcommand);
   }
   return `${runner} ${suggestedPackageSpec(input.version)} ${input.subcommand}`;
 }

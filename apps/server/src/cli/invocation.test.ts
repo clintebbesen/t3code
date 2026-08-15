@@ -41,9 +41,11 @@ it("treats stable installs as direct invocations", () => {
   assert.isNull(detectCliRunner(""));
 });
 
-it("re-suggests the nightly channel only for nightly builds", () => {
-  assert.equal(suggestedPackageSpec("0.0.31-nightly.20260729"), "t3code-clintebbesen@nightly");
-  assert.equal(suggestedPackageSpec("0.0.31"), "t3code-clintebbesen");
+it("suggests the stable public GitHub Release asset", () => {
+  assert.equal(
+    suggestedPackageSpec("0.0.31"),
+    "https://github.com/clintebbesen/t3code/releases/download/fork-cli-latest/t3code-clintebbesen.tgz",
+  );
 });
 
 it("formats serve suggestions to match the launching command", () => {
@@ -53,7 +55,7 @@ it("formats serve suggestions to match the launching command", () => {
       entryPath: "/home/theo/.npm/_npx/abc/node_modules/t3/dist/bin.mjs",
       version: "0.0.31-nightly.20260729",
     }),
-    "npx t3code-clintebbesen@nightly serve",
+    "npx -y --prefer-online --package=https://github.com/clintebbesen/t3code/releases/download/fork-cli-latest/t3code-clintebbesen.tgz -- t3 serve",
   );
   assert.equal(
     formatCliCommand({
@@ -61,7 +63,7 @@ it("formats serve suggestions to match the launching command", () => {
       entryPath: "/tmp/bunx-1000-t3@latest/node_modules/t3/dist/bin.mjs",
       version: "0.0.31",
     }),
-    "bunx t3code-clintebbesen serve",
+    "npx -y --prefer-online --package=https://github.com/clintebbesen/t3code/releases/download/fork-cli-latest/t3code-clintebbesen.tgz -- t3 serve",
   );
   assert.equal(
     formatCliCommand({

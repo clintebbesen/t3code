@@ -4,8 +4,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
-  id-token: write
+  contents: write
 
 concurrency:
   group: release-fork-cli
@@ -15,7 +14,7 @@ jobs:
   release:
     name: Publish the manual fork CLI release
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -31,31 +30,68 @@ jobs:
               - --filter=@t3tools/web...
               - --filter=@t3tools/scripts...
 
-      - name: Resolve fork package and release version
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Resolve release metadata
         id: release_meta
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           package_name="$(node -p "require('./apps/server/package.json').t3code?.distributionPackage || ''")"
+          repository="$(node -p "require('./apps/server/package.json').t3code?.githubRelease?.repository || ''")"
+          exact_tag_prefix="$(node -p "require('./apps/server/package.json').t3code?.githubRelease?.exactTagPrefix || ''")"
+          latest_tag="$(node -p "require('./apps/server/package.json').t3code?.githubRelease?.latestTag || ''")"
+          asset_name="$(node -p "require('./apps/server/package.json').t3code?.githubRelease?.assetName || ''")"
           base_version="$(node -p "require('./apps/server/package.json').version.split('-')[0]")"
-          if [[ -z "$package_name" ]]; then
-            echo "apps/server/package.json must declare t3code.distributionPackage." >&2
+
+          [[ "$package_name" =~ ^[a-z0-9][a-z0-9._-]*$ ]] || {
+            echo "A valid unscoped t3code.distributionPackage is required." >&2
             exit 1
-          fi
-          if [[ ! "$package_name" =~ ^(@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*$ ]]; then
-            echo "Invalid npm package name: $package_name" >&2
+          }
+          [[ "$repository" == "$GITHUB_REPOSITORY" ]] || {
+            echo "Configured release repository '$repository' does not match '$GITHUB_REPOSITORY'." >&2
             exit 1
-          fi
-          if [[ ! "$base_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          }
+          [[ "$exact_tag_prefix" =~ ^[A-Za-z0-9._-]+$ ]] || {
+            echo "Invalid exact release tag prefix: $exact_tag_prefix" >&2
+            exit 1
+          }
+          [[ "$latest_tag" =~ ^[A-Za-z0-9._-]+$ ]] || {
+            echo "Invalid stable release tag: $latest_tag" >&2
+            exit 1
+          }
+          [[ "$asset_name" =~ ^[A-Za-z0-9._-]+\.tgz$ ]] || {
+            echo "Invalid release asset name: $asset_name" >&2
+            exit 1
+          }
+          [[ "$base_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
             echo "The server package must start from a stable SemVer version; received $base_version." >&2
             exit 1
-          fi
+          }
+
           version="${base_version}-fork.$(date -u +%Y%m%d).${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}"
-          previous_version="$(npm view "$package_name@latest" version 2>/dev/null || true)"
-          echo "package_name=$package_name" >> "$GITHUB_OUTPUT"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "previous_version=$previous_version" >> "$GITHUB_OUTPUT"
-          echo "Publishing $package_name@$version"
+          exact_tag="${exact_tag_prefix}${version}"
+          release_json="$(gh release list --repo "$repository" --limit 100 --json tagName)"
+          previous_tag="$(node -e 'const fs=require("fs"); const prefix=process.argv[1]; const releases=JSON.parse(fs.readFileSync(0,"utf8")); process.stdout.write(releases.find((release) => release.tagName.startsWith(prefix))?.tagName ?? "")' "$exact_tag_prefix" <<<"$release_json")"
+          latest_url="https://github.com/$repository/releases/download/$latest_tag/$asset_name"
+          exact_url="https://github.com/$repository/releases/download/$exact_tag/$asset_name"
+
+          {
+            echo "package_name=$package_name"
+            echo "repository=$repository"
+            echo "version=$version"
+            echo "exact_tag=$exact_tag"
+            echo "exact_tag_prefix=$exact_tag_prefix"
+            echo "latest_tag=$latest_tag"
+            echo "asset_name=$asset_name"
+            echo "previous_tag=$previous_tag"
+            echo "latest_url=$latest_url"
+            echo "exact_url=$exact_url"
+          } >> "$GITHUB_OUTPUT"
+          echo "Preparing $package_name@$version for GitHub Releases"
 
       - name: Align package versions
         run: node scripts/update-release-package-versions.ts "${{ steps.release_meta.outputs.version }}"
@@ -75,64 +111,128 @@ jobs:
           cp native/resource-monitor/target/release/t3-resource-monitor "$target_dir/"
           chmod +x "$target_dir/t3-resource-monitor"
 
-      - name: Validate npm package contents
+      - name: Create release package
         run: |
-          node apps/server/scripts/cli.ts publish \
-            --tag latest \
-            --access public \
+          set -euo pipefail
+          mkdir -p release-assets
+          node apps/server/scripts/cli.ts pack \
             --app-version "${{ steps.release_meta.outputs.version }}" \
-            --dry-run \
-            --verbose
+            --output "release-assets/${{ steps.release_meta.outputs.asset_name }}"
 
-      - name: Publish fork CLI to npm
-        run: |
-          node apps/server/scripts/cli.ts publish \
-            --tag latest \
-            --access public \
-            --app-version "${{ steps.release_meta.outputs.version }}" \
-            --provenance \
-            --verbose
-
-      - name: Read back npm latest
+      - name: Validate release package
         shell: bash
         run: |
           set -euo pipefail
-          package_name="${{ steps.release_meta.outputs.package_name }}"
-          expected="${{ steps.release_meta.outputs.version }}"
-          previous="${{ steps.release_meta.outputs.previous_version }}"
-          published=""
-          for attempt in 1 2 3 4 5 6; do
-            echo "Checking npm latest ($attempt/6)..."
-            published="$(npm view "$package_name@latest" version 2>/dev/null || true)"
-            [[ "$published" == "$expected" ]] && break
-            sleep 5
-          done
-          [[ "$published" == "$expected" ]] || {
-            echo "npm latest points to $published, expected $expected." >&2
+          archive="release-assets/${{ steps.release_meta.outputs.asset_name }}"
+          expected_name="${{ steps.release_meta.outputs.package_name }}"
+          expected_version="${{ steps.release_meta.outputs.version }}"
+          actual="$(tar -xOf "$archive" package/package.json | node -e 'let data=""; process.stdin.on("data", (chunk) => data += chunk); process.stdin.on("end", () => { const pkg=JSON.parse(data); process.stdout.write(`${pkg.name}@${pkg.version}`); });')"
+          [[ "$actual" == "$expected_name@$expected_version" ]] || {
+            echo "Packed $actual, expected $expected_name@$expected_version." >&2
             exit 1
           }
+          tar -tzf "$archive" > release-assets/package-contents.txt
+          grep -Fxq 'package/dist/bin.mjs' release-assets/package-contents.txt
+          grep -Fxq 'package/dist/service-launcher.mjs' release-assets/package-contents.txt
+          grep -Fxq 'package/dist/client/index.html' release-assets/package-contents.txt
+          grep -Fxq 'package/dist/resource-monitor/linux-x64/t3-resource-monitor' \
+            release-assets/package-contents.txt
+          npx -y --prefer-online --package="./$archive" -- t3 service update --help
+
+      - name: Publish immutable version release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "${{ steps.release_meta.outputs.exact_tag }}" \
+            "release-assets/${{ steps.release_meta.outputs.asset_name }}" \
+            --repo "${{ steps.release_meta.outputs.repository }}" \
+            --target "$GITHUB_SHA" \
+            --title "Fork CLI ${{ steps.release_meta.outputs.version }}" \
+            --notes "Manual T3 Code fork CLI release. Each server remains opt-in and updates only when its operator runs the release command."
+
+      - name: Update stable release alias
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          repository="${{ steps.release_meta.outputs.repository }}"
+          latest_tag="${{ steps.release_meta.outputs.latest_tag }}"
+          archive="release-assets/${{ steps.release_meta.outputs.asset_name }}"
+          title="Latest fork CLI (${{ steps.release_meta.outputs.version }})"
+          notes="Stable download alias for ${{ steps.release_meta.outputs.exact_tag }}. The immutable release remains available for rollback."
+          if gh release view "$latest_tag" --repo "$repository" >/dev/null 2>&1; then
+            gh release upload "$latest_tag" "$archive" --repo "$repository" --clobber
+            gh release edit "$latest_tag" --repo "$repository" --title "$title" --notes "$notes"
+          else
+            gh release create "$latest_tag" "$archive" \
+              --repo "$repository" \
+              --target "$GITHUB_SHA" \
+              --title "$title" \
+              --notes "$notes"
+          fi
+
+      - name: Read back release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_archive="release-assets/${{ steps.release_meta.outputs.asset_name }}"
+          exact_download="$(mktemp)"
+          latest_download="$(mktemp)"
+          trap 'rm -f "$exact_download" "$latest_download"' EXIT
+          matched=false
+          for attempt in 1 2 3 4 5 6; do
+            echo "Checking public GitHub Release downloads ($attempt/6)..."
+            if curl --fail --location --silent --show-error \
+                "${{ steps.release_meta.outputs.exact_url }}" --output "$exact_download" && \
+              curl --fail --location --silent --show-error \
+                "${{ steps.release_meta.outputs.latest_url }}" --output "$latest_download" && \
+              cmp --silent "$source_archive" "$exact_download" && \
+              cmp --silent "$source_archive" "$latest_download"; then
+              matched=true
+              break
+            fi
+            sleep 5
+          done
+          [[ "$matched" == true ]] || {
+            echo "Public release assets did not match the package that was built." >&2
+            exit 1
+          }
+          npx -y --prefer-online \
+            --package="${{ steps.release_meta.outputs.latest_url }}" -- t3 service update --help
+
+      - name: Summarize operator commands
+        shell: bash
+        run: |
+          set -euo pipefail
+          previous_tag="${{ steps.release_meta.outputs.previous_tag }}"
+          previous_version="${previous_tag#"${{ steps.release_meta.outputs.exact_tag_prefix }}"}"
           {
             echo "## Fork CLI release"
             echo
-            echo "Published \`$package_name@$expected\` to npm dist-tag \`latest\`."
+            echo "Published immutable release \`${{ steps.release_meta.outputs.exact_tag }}\` and refreshed \`${{ steps.release_meta.outputs.latest_tag }}\`."
             echo
-            echo "Manual install/update command per LXC:"
+            echo "Manual install/update command per idle LXC:"
             echo
             echo '```sh'
-            echo "npx -y $package_name@latest service update"
+            echo "npx -y --prefer-online --package=${{ steps.release_meta.outputs.latest_url }} -- t3 service update"
             echo '```'
             echo
             echo "Exact-version install:"
             echo
             echo '```sh'
-            echo "npx -y $package_name@$expected service update"
+            echo "npx -y --prefer-online --package=${{ steps.release_meta.outputs.exact_url }} -- t3 service update"
             echo '```'
-            if [[ -n "$previous" ]]; then
+            if [[ -n "$previous_tag" ]]; then
               echo
-              echo "Rollback to the previous latest release:"
+              echo "Rollback to the previous fork release:"
               echo
               echo '```sh'
-              echo "npx -y $package_name@$previous service update"
+              echo "npx -y --prefer-online --package=https://github.com/${{ steps.release_meta.outputs.repository }}/releases/download/$previous_tag/${{ steps.release_meta.outputs.asset_name }} -- t3 service update"
               echo '```'
+              echo
+              echo "Previous version: \`$previous_version\`"
             fi
           } >> "$GITHUB_STEP_SUMMARY"

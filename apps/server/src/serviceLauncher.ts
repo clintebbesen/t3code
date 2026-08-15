@@ -27,7 +27,7 @@ import {
   SERVICE_STATE_FILE,
   SERVICE_STOP_MARKER_FILE,
 } from "./cloud/serviceProtocol.ts";
-import { CLI_PACKAGE_PATH_SEGMENTS, cliPackageSpec } from "./packageIdentity.ts";
+import { CLI_PACKAGE_PATH_SEGMENTS, cliPackageLabel } from "./packageIdentity.ts";
 
 const HANDOFF_DELAY_MS = 2_000;
 const PREPARED_TIMEOUT_MS = 120_000;
@@ -397,7 +397,7 @@ export class Launcher {
   async #startChild(version: string, role: ChildRole, update?: ServiceUpdateRecord): Promise<void> {
     if (this.#stopping) return;
     if (!(await runtimeExists(this.#baseDir, version))) {
-      throw new Error(`Selected ${cliPackageSpec(version)} runtime is missing or incomplete.`);
+      throw new Error(`Selected ${cliPackageLabel(version)} runtime is missing or incomplete.`);
     }
     if (this.#stopping) return;
     const paths = runtimePaths(this.#baseDir, version);

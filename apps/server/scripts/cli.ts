@@ -16,6 +16,7 @@ import {
   resolveWebIconOverrides,
 } from "../../../scripts/lib/brand-assets.ts";
 import { resolveCatalogDependencies } from "../../../scripts/lib/resolve-catalog.ts";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { fromJsonStringPretty } from "@t3tools/shared/schemaJson";
 import { fromYaml } from "@t3tools/shared/schemaYaml";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
@@ -25,10 +26,11 @@ import {
   ServerCliCommandExitError,
   ServerCliDevelopmentIconSourceMissingError,
   ServerCliDevelopmentIconTargetMissingError,
+  ServerCliPackOutputError,
   ServerCliPublishIconSourceMissingError,
   ServerCliPublishIconTargetMissingError,
 } from "./cliErrors.ts";
-import { createVpPmPublishArgs } from "./publishConfig.ts";
+import { createVpPmPackArgs, createVpPmPublishArgs } from "./publishConfig.ts";
 
 interface PackageJson {
   name: string;
@@ -137,6 +139,87 @@ const applyDevelopmentIconOverrides = Effect.fn("applyDevelopmentIconOverrides")
   yield* Effect.log("[cli] Applied development icon overrides to dist/client");
 });
 
+const withPreparedPackage = Effect.fn("server_cli.with_prepared_package")(function* <A, E, R>(
+  config: {
+    readonly appVersion: Option.Option<string>;
+    readonly verbose: boolean;
+  },
+  use: (prepared: {
+    readonly repoRoot: string;
+    readonly serverDir: string;
+    readonly packageName: string;
+    readonly version: string;
+  }) => Effect.Effect<A, E, R>,
+) {
+  const path = yield* Path.Path;
+  const fs = yield* FileSystem.FileSystem;
+  const repoRoot = yield* RepoRoot;
+  const serverDir = path.join(repoRoot, "apps/server");
+  const packageJsonPath = path.join(serverDir, "package.json");
+
+  for (const relPath of ["dist/bin.mjs", "dist/service-launcher.mjs", "dist/client/index.html"]) {
+    const abs = path.join(serverDir, relPath);
+    if (!(yield* fs.exists(abs))) {
+      return yield* new ServerCliBuildAssetMissingError({ assetPath: abs });
+    }
+  }
+
+  return yield* Effect.acquireUseRelease(
+    Effect.gen(function* () {
+      const version = Option.getOrElse(config.appVersion, () => serverPackageJson.version);
+      const workspaceConfig = yield* readWorkspaceConfig();
+      const workspaceCatalog = workspaceConfig.catalog ?? {};
+      const workspaceOverrides = workspaceConfig.overrides ?? {};
+      const packageName = serverPackageJson.t3code?.distributionPackage ?? serverPackageJson.name;
+      const pkg: PackageJson = {
+        name: packageName,
+        repository: serverPackageJson.repository,
+        bin: serverPackageJson.bin,
+        type: serverPackageJson.type,
+        version,
+        engines: serverPackageJson.engines,
+        files: serverPackageJson.files,
+        dependencies: resolveCatalogDependencies(
+          serverPackageJson.dependencies,
+          workspaceCatalog,
+          "apps/server",
+        ),
+        overrides: resolveCatalogDependencies(workspaceOverrides, workspaceCatalog, "apps/server"),
+      };
+
+      return {
+        packageName,
+        version,
+        packageJsonString: yield* encodePackageJson(pkg),
+        originalPackageJson: yield* fs.readFile(packageJsonPath),
+        icons: yield* preparePublishIcons(repoRoot, serverDir, version),
+      };
+    }),
+    (resource) =>
+      Effect.gen(function* () {
+        yield* fs.writeFileString(packageJsonPath, `${resource.packageJsonString}\n`);
+        for (const icon of resource.icons) {
+          yield* fs.writeFile(icon.targetPath, icon.publish);
+        }
+        yield* Effect.log("[cli] Applied package metadata and release icon overrides");
+        return yield* use({
+          repoRoot,
+          serverDir,
+          packageName: resource.packageName,
+          version: resource.version,
+        });
+      }),
+    (resource) =>
+      Effect.gen(function* () {
+        yield* fs.writeFile(packageJsonPath, resource.originalPackageJson);
+        for (const icon of resource.icons) {
+          yield* fs.writeFile(icon.targetPath, icon.original);
+        }
+        if (config.verbose) yield* Effect.log("[cli] Restored original release assets");
+      }),
+  );
+});
+
 // ---------------------------------------------------------------------------
 // build subcommand
 // ---------------------------------------------------------------------------
@@ -191,101 +274,85 @@ const publishCmd = Command.make(
     verbose: Flag.boolean("verbose").pipe(Flag.withDefault(false)),
   },
   (config) =>
-    Effect.gen(function* () {
-      const path = yield* Path.Path;
-      const fs = yield* FileSystem.FileSystem;
-      const repoRoot = yield* RepoRoot;
-      const serverDir = path.join(repoRoot, "apps/server");
-      const packageJsonPath = path.join(serverDir, "package.json");
+    withPreparedPackage(config, ({ repoRoot }) =>
+      Effect.gen(function* () {
+        const args = createVpPmPublishArgs(config);
+        const spawnCommand = yield* resolveSpawnCommand("vp", ["pm", ...args]);
 
-      // Assert build assets exist
-      for (const relPath of [
-        "dist/bin.mjs",
-        "dist/service-launcher.mjs",
-        "dist/client/index.html",
-      ]) {
-        const abs = path.join(serverDir, relPath);
-        if (!(yield* fs.exists(abs))) {
-          return yield* new ServerCliBuildAssetMissingError({ assetPath: abs });
-        }
-      }
-
-      yield* Effect.acquireUseRelease(
-        // Acquire: resolve publish metadata and read every original before mutation.
-        Effect.gen(function* () {
-          const version = Option.getOrElse(config.appVersion, () => serverPackageJson.version);
-          const workspaceConfig = yield* readWorkspaceConfig();
-          const workspaceCatalog = workspaceConfig.catalog ?? {};
-          const workspaceOverrides = workspaceConfig.overrides ?? {};
-          const pkg: PackageJson = {
-            name: serverPackageJson.t3code?.distributionPackage ?? serverPackageJson.name,
-            repository: serverPackageJson.repository,
-            bin: serverPackageJson.bin,
-            type: serverPackageJson.type,
-            version,
-            engines: serverPackageJson.engines,
-            files: serverPackageJson.files,
-            dependencies: resolveCatalogDependencies(
-              serverPackageJson.dependencies,
-              workspaceCatalog,
-              "apps/server",
-            ),
-            overrides: resolveCatalogDependencies(
-              workspaceOverrides,
-              workspaceCatalog,
-              "apps/server",
-            ),
-          };
-
-          return {
-            packageJsonString: yield* encodePackageJson(pkg),
-            originalPackageJson: yield* fs.readFile(packageJsonPath),
-            icons: yield* preparePublishIcons(repoRoot, serverDir, version),
-          };
-        }),
-        // Use: pnpm publish from the workspace root so pnpm-only workspace
-        // config, including override selectors, is interpreted correctly.
-        (resource) =>
-          Effect.gen(function* () {
-            yield* fs.writeFileString(packageJsonPath, `${resource.packageJsonString}\n`);
-            for (const icon of resource.icons) {
-              yield* fs.writeFile(icon.targetPath, icon.publish);
-            }
-            yield* Effect.log("[cli] Applied package metadata and publish icon overrides");
-
-            const args = createVpPmPublishArgs(config);
-            const spawnCommand = yield* resolveSpawnCommand("vp", ["pm", ...args]);
-
-            yield* Effect.log(`[cli] Running: vp pm ${args.join(" ")}`);
-            yield* runCommand(
-              ChildProcess.make(spawnCommand.command, spawnCommand.args, {
-                cwd: repoRoot,
-                stdout: config.verbose ? "inherit" : "ignore",
-                stderr: "inherit",
-                shell: spawnCommand.shell,
-              }),
-            );
+        yield* Effect.log(`[cli] Running: vp pm ${args.join(" ")}`);
+        yield* runCommand(
+          ChildProcess.make(spawnCommand.command, spawnCommand.args, {
+            cwd: repoRoot,
+            stdout: config.verbose ? "inherit" : "ignore",
+            stderr: "inherit",
+            shell: spawnCommand.shell,
           }),
-        // Release: restore every file even if applying overrides or publishing fails.
-        (resource) =>
-          Effect.gen(function* () {
-            yield* fs.writeFile(packageJsonPath, resource.originalPackageJson);
-            for (const icon of resource.icons) {
-              yield* fs.writeFile(icon.targetPath, icon.original);
-            }
-            if (config.verbose) yield* Effect.log("[cli] Restored original publish assets");
-          }),
-      );
-    }),
+        );
+      }),
+    ),
 ).pipe(Command.withDescription("Publish the server package to npm."));
+
+// ---------------------------------------------------------------------------
+// pack subcommand
+// ---------------------------------------------------------------------------
+
+const packCmd = Command.make(
+  "pack",
+  {
+    output: Flag.string("output"),
+    appVersion: Flag.string("app-version").pipe(Flag.optional),
+    verbose: Flag.boolean("verbose").pipe(Flag.withDefault(false)),
+  },
+  (config) =>
+    withPreparedPackage(config, ({ repoRoot }) =>
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const fs = yield* FileSystem.FileSystem;
+        const outputPath = path.resolve(config.output);
+        const outputDirectory = path.dirname(outputPath);
+        yield* fs.makeDirectory(outputDirectory, { recursive: true });
+        if (yield* fs.exists(outputPath)) {
+          return yield* new ServerCliPackOutputError({
+            outputPath,
+            reason: "the output file already exists",
+          });
+        }
+
+        const args = createVpPmPackArgs(outputPath);
+        const platform = yield* HostProcessPlatform;
+        const localVp = path.join(
+          repoRoot,
+          "node_modules",
+          ".bin",
+          platform === "win32" ? "vp.cmd" : "vp",
+        );
+        const spawnCommand = yield* resolveSpawnCommand(localVp, ["pm", ...args]);
+        yield* runCommand(
+          ChildProcess.make(spawnCommand.command, spawnCommand.args, {
+            cwd: repoRoot,
+            stdout: config.verbose ? "inherit" : "ignore",
+            stderr: "inherit",
+            shell: spawnCommand.shell,
+          }),
+        );
+        if (!(yield* fs.exists(outputPath))) {
+          return yield* new ServerCliPackOutputError({
+            outputPath,
+            reason: "Vite+ completed without creating the requested archive",
+          });
+        }
+        yield* Effect.log(`[cli] Created release package: ${outputPath}`);
+      }),
+    ),
+).pipe(Command.withDescription("Create a release-ready server package archive."));
 
 // ---------------------------------------------------------------------------
 // root command
 // ---------------------------------------------------------------------------
 
 const cli = Command.make("cli").pipe(
-  Command.withDescription("T3 server build & publish CLI."),
-  Command.withSubcommands([buildCmd, publishCmd]),
+  Command.withDescription("T3 server build, package, and publish CLI."),
+  Command.withSubcommands([buildCmd, packCmd, publishCmd]),
 );
 
 Command.run(cli, { version: "0.0.0" }).pipe(

@@ -68,3 +68,15 @@ export class ServerCliBuildAssetMissingError extends Schema.TaggedErrorClass<Ser
     return `Missing build asset: ${this.assetPath}. Run the build subcommand first.`;
   }
 }
+
+export class ServerCliPackOutputError extends Schema.TaggedErrorClass<ServerCliPackOutputError>()(
+  "ServerCliPackOutputError",
+  {
+    outputPath: Schema.String,
+    reason: Schema.String,
+  },
+) {
+  override get message(): string {
+    return `Could not create release package at ${this.outputPath}: ${this.reason}`;
+  }
+}

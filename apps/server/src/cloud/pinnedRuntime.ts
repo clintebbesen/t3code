@@ -7,7 +7,7 @@ import * as Option from "effect/Option";
 import * as Semaphore from "effect/Semaphore";
 
 import * as ProcessRunner from "../processRunner.ts";
-import { CLI_PACKAGE_NAME, CLI_PACKAGE_PATH_SEGMENTS, cliPackageSpec } from "../packageIdentity.ts";
+import { CLI_PACKAGE_NAME, CLI_PACKAGE_PATH_SEGMENTS, cliInstallSpec } from "../packageIdentity.ts";
 
 /**
  * A pinned runtime is an exact `<cli-package>@<version>` npm-installed into
@@ -174,7 +174,7 @@ const installPinnedRuntime = Effect.fn("cloud.pinned_runtime.ensure_installed")(
           stagingDir,
           "--no-fund",
           "--no-audit",
-          cliPackageSpec(input.version),
+          cliInstallSpec(input.version),
         ],
         // Native dependencies may compile from source on slower machines.
         timeout: PINNED_RUNTIME_INSTALL_TIMEOUT,

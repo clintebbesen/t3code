@@ -11,7 +11,7 @@ The service files under `<baseDir>/runtime` are:
 
 - `service-launcher.mjs`, the stable process selected by systemd;
 - `service-state.json`, the launcher's durable selection state;
-- `versions/<version>`, immutable exact-version npm installs.
+- `versions/<version>`, immutable exact-version package installs.
 
 The launcher is the only runtime writer of `service-state.json`. `t3 service install` and
 `t3 service update` may replace the launcher and state while the unit is stopped. Server children
@@ -28,9 +28,9 @@ Every write uses same-directory replacement plus file and directory fsync.
 
 ## Remote Update
 
-1. The active server installs `<cli-package>@<target>` into a unique staging directory. The package
-   name is embedded in the published CLI build, so a fork can use its own npm package without ever
-   falling back to the official `t3` package.
+1. The active server installs the target from its embedded distribution source into a unique
+   staging directory. Official builds use `<cli-package>@<target>`; this fork uses the target's
+   immutable GitHub Release archive and never falls back to the official `t3` package.
 2. The target runs `__service-preflight` and verifies that the stable launcher supports its update
    protocol.
 3. The staging directory is renamed to its immutable version path only after preflight succeeds.
@@ -66,7 +66,7 @@ The protocol version is part of the safety boundary. A target that requires data
 blocked when the installed launcher is too old. Upgrade the launcher once with:
 
 ```sh
-npx <cli-package>@<version> service update
+npx --package=<exact-package-spec-or-url> -- t3 service update
 ```
 
 The local command stops the unit, selects the new launcher and exact runtime, then restarts the

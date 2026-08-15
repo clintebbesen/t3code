@@ -51,6 +51,12 @@
     "node": "^22.16 || ^23.11 || >=24.10"
   },
   "t3code": {
-    "distributionPackage": "t3code-clintebbesen"
+    "distributionPackage": "t3code-clintebbesen",
+    "githubRelease": {
+      "repository": "clintebbesen/t3code",
+      "exactTagPrefix": "fork-cli-v",
+      "latestTag": "fork-cli-latest",
+      "assetName": "t3code-clintebbesen.tgz"
+    }
   }
 }

@@ -269,6 +269,10 @@ Checklist:
    - invoke the CLI publish script with npm dist-tag `latest`
 5. Nightly runs invoke the same publish script with npm dist-tag `nightly`.
 
+The fork's manual LXC workflow does not use this npm publication path. It packages the same prepared
+server manifest as a public GitHub Release archive; see
+[Manual deployment of the fork CLI](./fork-cli-deployment.md).
+
 ## 1) Release validation and unsigned builds
 
 There is no dry-run tag path. Pushing any accepted non-nightly tag, including

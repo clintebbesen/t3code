@@ -206,8 +206,14 @@ describe("t3 pair", () => {
         typeof error === "object" && error !== null && "cause" in error ? error.cause : error,
       );
       assert.include(rendered, "No running T3 Code server found.");
-      assert.include(rendered, "npx -y t3code-clintebbesen serve");
-      assert.include(rendered, "npx -y t3code-clintebbesen connect");
+      assert.include(
+        rendered,
+        "npx -y --prefer-online --package=https://github.com/clintebbesen/t3code/releases/download/fork-cli-latest/t3code-clintebbesen.tgz -- t3 serve",
+      );
+      assert.include(
+        rendered,
+        "npx -y --prefer-online --package=https://github.com/clintebbesen/t3code/releases/download/fork-cli-latest/t3code-clintebbesen.tgz -- t3 connect",
+      );
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 

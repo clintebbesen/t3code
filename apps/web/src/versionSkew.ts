@@ -6,6 +6,7 @@ import { APP_VERSION } from "./branding";
 import { getLocalStorageItem, setLocalStorageItem } from "./hooks/useLocalStorage";
 
 const CLI_PACKAGE_NAME = serverPackageJson.t3code?.distributionPackage || serverPackageJson.name;
+const CLI_GITHUB_RELEASE = serverPackageJson.t3code?.githubRelease;
 
 export interface VersionMismatch {
   readonly clientVersion: string;
@@ -62,7 +63,12 @@ export function resolveServerSelfUpdateCapability(
 
 /** The command to hand users whose server cannot update itself. */
 export function manualServerUpdateCommand(targetVersion: string): string {
-  return `npx -y ${CLI_PACKAGE_NAME}@${targetVersion}`;
+  if (CLI_GITHUB_RELEASE === undefined) {
+    return `npx -y ${CLI_PACKAGE_NAME}@${targetVersion}`;
+  }
+  const tag = encodeURIComponent(`${CLI_GITHUB_RELEASE.exactTagPrefix}${targetVersion}`);
+  const asset = encodeURIComponent(CLI_GITHUB_RELEASE.assetName);
+  return `npx -y --prefer-online --package=https://github.com/${CLI_GITHUB_RELEASE.repository}/releases/download/${tag}/${asset} -- t3`;
 }
 
 /** One sentence telling the user how to resolve version skew for a server,

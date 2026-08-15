@@ -1,77 +1,73 @@
 # Manual deployment of the fork CLI
 
-This fork publishes its Linux server CLI as `t3code-clintebbesen`. The LXC hosts do not pull from
-Git, build the monorepo, or run a deployment agent. They download the published npm package only
-when an operator chooses to update a host.
+This fork distributes its Linux server CLI as a public GitHub Release archive. The LXC hosts do
+not pull from Git, build the monorepo, use an npm account, or run a deployment agent. They download
+the release only when an operator chooses to update that host.
 
-## One-time maintainer setup
+## Create a release
 
-The package identity is declared in `apps/server/package.json` under
-`t3code.distributionPackage`. Change that value before the first publish if a different public npm
-name is preferred. The operator command then uses that exact name.
+After the release workflow is on the repository's default branch:
 
-Create the public package once from a maintainer workstation after authenticating to npm. Build the
-web and server packages, build the Linux resource monitor, and run the publish command with a unique
-fork version. The repository's publish command restores the working tree's package metadata after
-it completes:
+1. Open **Actions → Release Fork CLI** in `clintebbesen/t3code`.
+2. Select **Run workflow**.
+3. Wait for the workflow and its **Read back release assets** step to pass.
+4. Copy the manual update command from the workflow summary.
 
-```sh
-vp run --filter @t3tools/web build
-vp run --filter t3 build
-cargo build --locked --release --manifest-path native/resource-monitor/Cargo.toml
-mkdir -p apps/server/dist/resource-monitor/linux-x64
-cp native/resource-monitor/target/release/t3-resource-monitor apps/server/dist/resource-monitor/linux-x64/
-node apps/server/scripts/cli.ts publish --tag latest --access public --app-version 0.0.33-fork.1 --verbose
-```
+No npm registration or trusted-publisher setup is required. The workflow has no push, tag,
+schedule, SSH, Proxmox, or automatic deployment trigger.
 
-After the package exists, configure npm Trusted Publishing for this repository and the workflow
-`.github/workflows/release-fork-cli.yml`. The workflow has no push, tag, schedule, SSH, Proxmox, or
-automatic deployment trigger: use **Run workflow** when a release is ready.
+Each run builds the web client, server CLI, and Linux x64 resource monitor. It then creates:
 
-Each run derives a unique version from the current server version, date, GitHub run number, and
-rerun attempt, publishes it to npm's `latest` dist-tag, and reads the dist-tag back before reporting
-success. Its summary includes both the published version and, when one existed, the previous latest
-version to use as a rollback target.
+- an immutable release such as `fork-cli-v0.0.33-fork.20260816.7.1`, used for exact installs and
+  rollback;
+- the stable `fork-cli-latest` release asset, refreshed by the manual workflow after local package
+  validation.
 
-## Manual update on one LXC
+The workflow downloads both public assets and compares their bytes with the archive it built. It
+also runs the CLI help entry point from the public stable URL before reporting success.
 
-Log into the LXC as the user that owns T3's data and provider authentication. Stop or wait for
-active agent work, then run:
+## Install or update one LXC
+
+Log into the LXC as the user that owns T3's data and provider authentication. Wait for active agent
+work to finish, then run this single command:
 
 ```sh
-npx -y t3code-clintebbesen@latest service update
+npx -y --prefer-online --package=https://github.com/clintebbesen/t3code/releases/download/fork-cli-latest/t3code-clintebbesen.tgz -- t3 service update
 ```
 
-Run the same command again on that host whenever you choose to install the newest published fork
-release. It is safe for first installation, repair, and ordinary updates. It briefly restarts the
-T3 service; it does not contact or update either of the other LXCs.
+The same command handles first installation, ordinary updates, and repair. `--prefer-online`
+ensures npm revalidates the stable GitHub asset instead of trusting a cached copy. The command
+briefly restarts this LXC's T3 service and does not contact either of the other LXCs.
 
 Check the result with:
 
 ```sh
-npx -y t3code-clintebbesen@latest service status
+npx -y --prefer-online --package=https://github.com/clintebbesen/t3code/releases/download/fork-cli-latest/t3code-clintebbesen.tgz -- t3 service status
 ```
 
 The service is installed for the current user, starts at boot through systemd, and keeps exact
-runtime versions under the T3 runtime directory. The stable launcher trials an update and restores
-the previous version and SQLite snapshot if the candidate fails its preflight or startup checks.
+runtime versions under the T3 runtime directory. Although the initial command uses the stable
+asset, the running CLI installs its pinned runtime from that version's immutable release URL. The
+launcher restores the previous runtime and SQLite snapshot if a candidate fails preflight or
+startup checks.
 
-## Exact-version rollback
+## Roll back one LXC
 
-The release workflow prints the previous latest version in its summary. To return one host to that
-version, run the same service command with the exact package version:
+The workflow summary prints the previous immutable release command. Its form is:
 
 ```sh
-npx -y t3code-clintebbesen@0.0.33-fork.20260815.7 service update
+npx -y --prefer-online --package=https://github.com/clintebbesen/t3code/releases/download/fork-cli-v0.0.33-fork.20260816.7.1/t3code-clintebbesen.tgz -- t3 service update
 ```
 
-Rollback is per host and remains a manual decision. Provider CLI installation, provider login, LXC
-backups, and Proxmox lifecycle operations are outside this npm release path.
+Rollback remains a manual, per-host decision. Provider CLI installation, provider login, LXC
+backups, and Proxmox lifecycle operations are outside this release path.
 
 ## Boundaries
 
-- Publishing a release does not update any host.
+- Creating a GitHub Release does not update any host.
 - Updating one host does not update another host.
-- No npm token is stored on the LXCs; the package is public and downloads anonymously.
-- The workflow publishes only after building the bundled web client, server CLI, and Linux resource
-  monitor. A failed build or npm read-back fails the workflow before an operator is told to update.
+- Public release downloads require no GitHub or npm credentials on an LXC.
+- The fork package itself is never published to a package registry. Its declared third-party
+  dependencies are still resolved by npm while installing the GitHub archive.
+- A failed build, package validation, release upload, public read-back, or public CLI smoke test
+  fails the workflow before an operator is told to update.

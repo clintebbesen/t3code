@@ -8,7 +8,7 @@ import * as Path from "effect/Path";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 
 import * as ProcessRunner from "../processRunner.ts";
-import { CLI_PACKAGE_PATH_SEGMENTS, cliPackageSpec } from "../packageIdentity.ts";
+import { CLI_PACKAGE_PATH_SEGMENTS, cliInstallSpec } from "../packageIdentity.ts";
 import {
   ensurePinnedRuntimeInstalled,
   pinnedRuntimePaths,
@@ -71,7 +71,10 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
       assert.deepEqual(installed, finalPaths);
       assert.isTrue(yield* fs.exists(finalPaths.entryPath));
       assert.equal(yield* fs.readFileString(finalPaths.sentinelPath), "1.2.3\n");
-      assert.equal(cliPackageSpec("1.2.3"), "t3code-clintebbesen@1.2.3");
+      assert.equal(
+        cliInstallSpec("1.2.3"),
+        "https://github.com/clintebbesen/t3code/releases/download/fork-cli-v1.2.3/t3code-clintebbesen.tgz",
+      );
     }),
   );
 

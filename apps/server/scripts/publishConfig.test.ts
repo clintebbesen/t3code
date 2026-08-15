@@ -1,6 +1,10 @@
 import { assert, it } from "@effect/vitest";
 
-import { createVpPmPublishArgs, SERVER_WORKSPACE_FILTER } from "./publishConfig.ts";
+import {
+  createVpPmPackArgs,
+  createVpPmPublishArgs,
+  SERVER_WORKSPACE_FILTER,
+} from "./publishConfig.ts";
 
 it("selects the server workspace by path while its publish name is replaced", () => {
   assert.equal(SERVER_WORKSPACE_FILTER, "./apps/server");
@@ -24,4 +28,14 @@ it("selects the server workspace by path while its publish name is replaced", ()
       "--dry-run",
     ],
   );
+});
+
+it("packs the temporarily renamed server workspace to the requested archive", () => {
+  assert.deepEqual(createVpPmPackArgs("/tmp/t3code-clintebbesen.tgz"), [
+    "pack",
+    "--filter",
+    "./apps/server",
+    "--out",
+    "/tmp/t3code-clintebbesen.tgz",
+  ]);
 });
