@@ -1,3 +1,4 @@
+import { ThreadGoalControl } from "./ThreadGoalControl";
 import { type EnvironmentConnectionPhase } from "@t3tools/client-runtime/connection";
 import {
   appendCodexArtifactTemplateUsePrompt,
@@ -679,6 +680,13 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
 
   return (
     <View className="flex-1">
+      {props.selectedThread.session?.providerName === "codex" && (
+        <ThreadGoalControl
+          key={selectedThreadKey}
+          environmentId={props.environmentId}
+          threadId={props.selectedThread.id}
+        />
+      )}
       {showContent ? (
         <View
           className="flex-1"

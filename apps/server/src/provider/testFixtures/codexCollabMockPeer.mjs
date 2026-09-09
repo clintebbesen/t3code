@@ -57,6 +57,63 @@ rl.on("line", (line) => {
     });
     return;
   }
+  if (method?.startsWith("thread/goal/")) {
+    if (!script.goalStatePath) {
+      write({ id, error: { code: -32601, message: "Goal API unavailable" } });
+      return;
+    }
+    NodeFS.appendFileSync(
+      `${process.env.T3_CODEX_COLLAB_SCRIPT}.requests`,
+      `${JSON.stringify({ method, params: message.params })}\n`,
+    );
+    if (script.goalError) {
+      write({ id, error: { code: -32601, message: script.goalError } });
+      return;
+    }
+    if (message.params.threadId !== fixture.responses.threadStart.thread.id) {
+      write({ id, error: { code: -32000, message: "Wrong native goal thread" } });
+      return;
+    }
+    const goalPath = script.goalStatePath;
+    let goal =
+      goalPath && NodeFS.existsSync(goalPath)
+        ? JSON.parse(NodeFS.readFileSync(goalPath, "utf8"))
+        : null;
+    if (method === "thread/goal/get") {
+      write({ id, result: { goal } });
+      return;
+    }
+    if (method === "thread/goal/clear") {
+      NodeFS.writeFileSync(goalPath, "null");
+      write({ id, result: { cleared: goal !== null } });
+      write({ method: "thread/goal/cleared", params: { threadId: message.params.threadId } });
+      return;
+    }
+    const { threadId, objective, status } = message.params;
+    if (!goal && !objective) {
+      write({ id, error: { code: -32000, message: "No goal to resume" } });
+      return;
+    }
+    goal = {
+      threadId,
+      objective: objective ?? goal.objective,
+      status,
+      tokenBudget: null,
+      tokensUsed: 0,
+      timeUsedSeconds: 0,
+      createdAt: 1,
+      updatedAt: 2,
+    };
+    NodeFS.writeFileSync(goalPath, JSON.stringify(goal));
+    write({ id, result: { goal } });
+    write({ method: "thread/goal/updated", params: { threadId, goal } });
+    if (status === "active")
+      write({
+        method: "turn/started",
+        params: { threadId, turn: fixture.responses.turnStart.turn },
+      });
+    return;
+  }
   if (method === "thread/start") {
     write({ id, result: fixture.responses.threadStart });
     return;

@@ -1,3 +1,4 @@
+import { ProviderGoalInput, ProviderGoalResult, ProviderGoalError } from "./providerGoal.ts";
 import * as Schema from "effect/Schema";
 import * as Rpc from "effect/unstable/rpc/Rpc";
 import * as RpcGroup from "effect/unstable/rpc/RpcGroup";
@@ -228,6 +229,7 @@ export const WS_METHODS = {
 
   // Provider methods
   providerUploadFeedback: "provider.uploadFeedback",
+  providerControlGoal: "provider.controlGoal",
 
   // VCS methods
   vcsPull: "vcs.pull",
@@ -694,6 +696,12 @@ export const WsAttachmentsDeleteRpc = Rpc.make(WS_METHODS.attachmentsDelete, {
   error: EnvironmentAuthorizationError,
 });
 
+export const WsProviderControlGoalRpc = Rpc.make(WS_METHODS.providerControlGoal, {
+  payload: ProviderGoalInput,
+  success: ProviderGoalResult,
+  error: Schema.Union([ProviderGoalError, EnvironmentAuthorizationError]),
+});
+
 export const WsProviderUploadFeedbackRpc = Rpc.make(WS_METHODS.providerUploadFeedback, {
   payload: ProviderUploadFeedbackInput,
   success: ProviderUploadFeedbackResult,
@@ -1081,6 +1089,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsAttachmentsCreateUploadUrlRpc,
   WsAttachmentsDeleteRpc,
   WsProviderUploadFeedbackRpc,
+  WsProviderControlGoalRpc,
   WsSubscribeVcsStatusRpc,
   WsVcsPullRpc,
   WsVcsRefreshStatusRpc,

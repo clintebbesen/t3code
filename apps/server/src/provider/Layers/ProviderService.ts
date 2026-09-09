@@ -1,3 +1,5 @@
+import { decodeInputOrValidationError, toValidationError } from "./ProviderControlValidation.ts";
+import { makeProviderSessionControls } from "./ProviderSessionControls.ts";
 /**
  * ProviderServiceLive - Cross-provider orchestration layer.
  *
@@ -19,7 +21,6 @@ import {
   ProviderSendTurnInput,
   ProviderSessionStartInput,
   ProviderStopSessionInput,
-  ProviderUploadFeedbackInput,
   type ProviderInstanceId,
   type ProviderDriverKind,
   type ProviderRuntimeEvent,
@@ -33,7 +34,6 @@ import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
-import * as SchemaIssue from "effect/SchemaIssue";
 import * as Stream from "effect/Stream";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
@@ -86,36 +86,6 @@ const ProviderRollbackConversationInput = Schema.Struct({
   threadId: ThreadId,
   numTurns: NonNegativeInt,
 });
-
-function toValidationError(
-  operation: string,
-  issue: string,
-  cause?: unknown,
-): ProviderValidationError {
-  return new ProviderValidationError({
-    operation,
-    issue,
-    ...(cause !== undefined ? { cause } : {}),
-  });
-}
-
-const decodeInputOrValidationError = <S extends Schema.Top>(input: {
-  readonly operation: string;
-  readonly schema: S;
-  readonly payload: unknown;
-}) => {
-  const decodeProviderRequestInput = Schema.decodeUnknownEffect(input.schema);
-  return decodeProviderRequestInput(input.payload).pipe(
-    Effect.mapError(
-      (schemaError) =>
-        new ProviderValidationError({
-          operation: input.operation,
-          issue: SchemaIssue.makeFormatterDefault()(schemaError.issue),
-          cause: schemaError,
-        }),
-    ),
-  );
-};
 
 function toRuntimeStatus(session: ProviderSession): "starting" | "running" | "stopped" | "error" {
   switch (session.status) {
@@ -1116,46 +1086,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     );
   });
 
-  const uploadFeedback: ProviderServiceMethod<"uploadFeedback"> = Effect.fn("uploadFeedback")(
-    function* (rawInput) {
-      const input = yield* decodeInputOrValidationError({
-        operation: "ProviderService.uploadFeedback",
-        schema: ProviderUploadFeedbackInput,
-        payload: rawInput,
-      });
-      let routed = yield* resolveRoutableSession({
-        threadId: input.threadId,
-        operation: "ProviderService.uploadFeedback",
-        allowRecovery: false,
-      });
-      if (routed.adapter.uploadFeedback === undefined) {
-        return yield* toValidationError(
-          "ProviderService.uploadFeedback",
-          `Provider '${routed.adapter.provider}' does not support feedback uploads.`,
-        );
-      }
-      if (!routed.isActive) {
-        routed = yield* resolveRoutableSession({
-          threadId: input.threadId,
-          operation: "ProviderService.uploadFeedback",
-          allowRecovery: true,
-        });
-      }
-      const uploadFeedback = routed.adapter.uploadFeedback;
-      if (uploadFeedback === undefined) {
-        return yield* toValidationError(
-          "ProviderService.uploadFeedback",
-          `Provider '${routed.adapter.provider}' does not support feedback uploads.`,
-        );
-      }
-      yield* Effect.annotateCurrentSpan({
-        "provider.operation": "upload-feedback",
-        "provider.kind": routed.adapter.provider,
-        "provider.thread_id": input.threadId,
-      });
-      return yield* uploadFeedback(input);
-    },
-  );
+  const { uploadFeedback, controlGoal } = makeProviderSessionControls(resolveRoutableSession);
 
   const runStopAll = Effect.fn("runStopAll")(function* () {
     const threadIds = yield* directory.listThreadIds();
@@ -1229,6 +1160,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     getInstanceInfo,
     rollbackConversation,
     uploadFeedback,
+    controlGoal,
     // Each access creates a fresh PubSub subscription so that multiple
     // consumers (ProviderRuntimeIngestion, CheckpointReactor, etc.) each
     // independently receive all runtime events.

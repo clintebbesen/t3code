@@ -1,3 +1,4 @@
+import { providerControlRpcHandlers } from "./provider/ProviderControlRpc.ts";
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
@@ -48,7 +49,6 @@ import {
   ProjectSearchContentsError,
   ProjectSearchEntriesError,
   ProjectWriteFileError,
-  ProviderUploadFeedbackError,
   RelayClientInstallFailedError,
   type RelayClientInstallProgressEvent,
   type ServerSelfUpdateError,
@@ -1620,20 +1620,7 @@ const makeWsRpcLayer = (
             ).pipe(Effect.map((providers) => ({ providers }))),
             { "rpc.aggregate": "server" },
           ),
-        [WS_METHODS.providerUploadFeedback]: (input) =>
-          observeRpcEffect(
-            WS_METHODS.providerUploadFeedback,
-            providerService.uploadFeedback(input).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new ProviderUploadFeedbackError({
-                    threadId: input.threadId,
-                    cause,
-                  }),
-              ),
-            ),
-            { "rpc.aggregate": "provider" },
-          ),
+        ...providerControlRpcHandlers(providerService, observeRpcEffect),
         [WS_METHODS.serverUpdateProvider]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverUpdateProvider,

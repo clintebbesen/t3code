@@ -1,3 +1,6 @@
+import type { CodexSessionRuntimeShape } from "./CodexSessionRuntimeShape.ts";
+export type { CodexSessionRuntimeShape } from "./CodexSessionRuntimeShape.ts";
+import { makeCodexGoalControl, pauseCodexGoalForStop } from "./CodexGoalRuntime.ts";
 import {
   ApprovalRequestId,
   DEFAULT_MODEL,
@@ -188,32 +191,6 @@ export interface CodexThreadTurnSnapshot {
 export interface CodexThreadSnapshot {
   readonly threadId: string;
   readonly turns: ReadonlyArray<CodexThreadTurnSnapshot>;
-}
-
-export interface CodexSessionRuntimeShape {
-  readonly start: () => Effect.Effect<ProviderSession, CodexSessionRuntimeError>;
-  readonly getSession: Effect.Effect<ProviderSession>;
-  readonly sendTurn: (
-    input: CodexSessionRuntimeSendTurnInput,
-  ) => Effect.Effect<ProviderTurnStartResult, CodexSessionRuntimeError>;
-  readonly interruptTurn: (turnId?: TurnId) => Effect.Effect<void, CodexSessionRuntimeError>;
-  readonly readThread: Effect.Effect<CodexThreadSnapshot, CodexSessionRuntimeError>;
-  readonly rollbackThread: (
-    numTurns: number,
-  ) => Effect.Effect<CodexThreadSnapshot, CodexSessionRuntimeError>;
-  readonly uploadFeedback: (
-    reason?: string,
-  ) => Effect.Effect<EffectCodexSchema.V2FeedbackUploadResponse, CodexSessionRuntimeError>;
-  readonly respondToRequest: (
-    requestId: ApprovalRequestId,
-    decision: ProviderApprovalDecision,
-  ) => Effect.Effect<void, CodexSessionRuntimeError>;
-  readonly respondToUserInput: (
-    requestId: ApprovalRequestId,
-    answers: ProviderUserInputAnswers,
-  ) => Effect.Effect<void, CodexSessionRuntimeError>;
-  readonly events: Stream.Stream<ProviderEvent, never>;
-  readonly close: Effect.Effect<void>;
 }
 
 export type CodexSessionRuntimeError =
@@ -2291,6 +2268,7 @@ export const makeCodexSessionRuntime = (
     });
 
     return {
+      controlGoal: makeCodexGoalControl(client, readProviderThreadId),
       start,
       getSession: Ref.get(sessionRef),
       sendTurn: (input) =>
@@ -2362,6 +2340,7 @@ export const makeCodexSessionRuntime = (
           // exactly during the runaway fleet where Stop matters most
           // (review finding). Per-child and overall deadlines guarantee the
           // parent interrupt below always runs.
+          const goalPause = yield* Effect.exit(pauseCodexGoalForStop(client, readProviderThreadId));
           const liveChildTurns = yield* Ref.get(collabChildLiveTurnsRef);
           yield* Effect.forEach(
             Array.from(liveChildTurns.entries()),
@@ -2375,13 +2354,13 @@ export const makeCodexSessionRuntime = (
             { concurrency: 8, discard: true },
           ).pipe(Effect.timeoutOption("10 seconds"), Effect.ignore);
           const effectiveTurnId = turnId ?? session.activeTurnId;
-          if (!effectiveTurnId) {
-            return;
+          if (effectiveTurnId) {
+            yield* client.request("turn/interrupt", {
+              threadId: providerThreadId,
+              turnId: effectiveTurnId,
+            });
           }
-          yield* client.request("turn/interrupt", {
-            threadId: providerThreadId,
-            turnId: effectiveTurnId,
-          });
+          if (Exit.isFailure(goalPause)) return yield* Effect.failCause(goalPause.cause);
         }),
       readThread: Effect.gen(function* () {
         const providerThreadId = yield* readProviderThreadId;

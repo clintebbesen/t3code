@@ -13,6 +13,8 @@
  */
 import type {
   ProviderInterruptTurnInput,
+  ProviderGoalInput,
+  ProviderGoalResult,
   ProviderInstanceId,
   ProviderRespondToRequestInput,
   ProviderRespondToUserInputInput,
@@ -38,6 +40,9 @@ import type { ProviderInstanceRoutingInfo } from "./ProviderAdapterRegistry.ts";
  * ProviderServiceShape - Service API for provider session and turn orchestration.
  */
 export interface ProviderServiceShape {
+  readonly controlGoal?: (
+    input: ProviderGoalInput,
+  ) => Effect.Effect<ProviderGoalResult, ProviderServiceError>;
   /**
    * Start a provider session.
    */

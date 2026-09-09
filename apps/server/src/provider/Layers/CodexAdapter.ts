@@ -1,3 +1,4 @@
+import { makeCodexSessionControls } from "./CodexSessionControls.ts";
 /**
  * CodexAdapterLive - Scoped live implementation for the Codex provider adapter.
  *
@@ -1879,55 +1880,10 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       ),
     );
 
-  const readThread: CodexAdapterShape["readThread"] = (threadId) =>
-    requireSession(threadId).pipe(
-      Effect.flatMap((session) => session.runtime.readThread),
-      Effect.mapError((cause) =>
-        cause._tag === "ProviderAdapterSessionNotFoundError"
-          ? cause
-          : mapCodexRuntimeError(threadId, "thread/read", cause),
-      ),
-      Effect.map((snapshot) => ({
-        threadId,
-        turns: snapshot.turns,
-      })),
-    );
-
-  const rollbackThread: CodexAdapterShape["rollbackThread"] = (threadId, numTurns) => {
-    if (!Number.isInteger(numTurns) || numTurns < 1) {
-      return Effect.fail(
-        new ProviderAdapterValidationError({
-          provider: PROVIDER,
-          operation: "rollbackThread",
-          issue: "numTurns must be an integer >= 1.",
-        }),
-      );
-    }
-
-    return requireSession(threadId).pipe(
-      Effect.flatMap((session) => session.runtime.rollbackThread(numTurns)),
-      Effect.mapError((cause) =>
-        cause._tag === "ProviderAdapterSessionNotFoundError"
-          ? cause
-          : mapCodexRuntimeError(threadId, "thread/rollback", cause),
-      ),
-      Effect.map((snapshot) => ({
-        threadId,
-        turns: snapshot.turns,
-      })),
-    );
-  };
-
-  const uploadFeedback: CodexAdapterShape["uploadFeedback"] = (input) =>
-    requireSession(input.threadId).pipe(
-      Effect.flatMap((session) => session.runtime.uploadFeedback(input.reason)),
-      Effect.map(({ threadId }) => ({ feedbackId: threadId })),
-      Effect.mapError((cause) =>
-        cause._tag === "ProviderAdapterSessionNotFoundError"
-          ? cause
-          : mapCodexRuntimeError(input.threadId, "feedback/upload", cause),
-      ),
-    );
+  const { readThread, rollbackThread, uploadFeedback, controlGoal } = makeCodexSessionControls(
+    requireSession,
+    mapCodexRuntimeError,
+  );
 
   const respondToRequest: CodexAdapterShape["respondToRequest"] = (threadId, requestId, decision) =>
     requireSession(threadId).pipe(
@@ -1979,7 +1935,10 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       if (!session) {
         return;
       }
-      yield* stopSessionInternal(session);
+      yield* session.runtime.interruptTurn().pipe(
+        Effect.mapError((cause) => mapCodexRuntimeError(threadId, "turn/interrupt", cause)),
+        Effect.ensuring(stopSessionInternal(session)),
+      );
     });
 
   const listSessions: CodexAdapterShape["listSessions"] = () =>
@@ -2017,6 +1976,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     readThread,
     rollbackThread,
     uploadFeedback,
+    controlGoal,
     respondToRequest,
     respondToUserInput,
     stopSession,

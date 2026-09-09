@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./state/thread-goal": {
+      "types": "./src/state/threadGoal.ts",
+      "default": "./src/state/threadGoal.ts"
+    },
     "./connection": {
       "types": "./src/connection/index.ts",
       "default": "./src/connection/index.ts"

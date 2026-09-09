@@ -9,6 +9,8 @@
  */
 import type {
   ApprovalRequestId,
+  ProviderGoalInput,
+  ProviderGoalResult,
   ProviderApprovalDecision,
   ProviderDriverKind,
   ProviderUserInputAnswers,
@@ -48,6 +50,7 @@ export interface ProviderAdapterShape<TError> {
   /**
    * Provider kind implemented by this adapter.
    */
+  readonly controlGoal?: (input: ProviderGoalInput) => Effect.Effect<ProviderGoalResult, TError>;
   readonly provider: ProviderDriverKind;
   readonly capabilities: ProviderAdapterCapabilities;
 

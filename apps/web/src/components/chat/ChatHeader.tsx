@@ -1,3 +1,4 @@
+import { ThreadGoalControl } from "./ThreadGoalControl";
 import {
   type EnvironmentId,
   type EditorId,
@@ -378,6 +379,13 @@ export const ChatHeader = memo(function ChatHeader({
           rightPanelOpen ? "pr-0" : "pr-16",
         )}
       >
+        {isServerThread && (
+          <ThreadGoalControl
+            key={`${activeThreadEnvironmentId}:${activeThreadId}`}
+            environmentId={activeThreadEnvironmentId}
+            threadId={activeThreadId}
+          />
+        )}
         {activeProjectScripts && (
           <ProjectScriptsControl
             scripts={activeProjectScripts}
