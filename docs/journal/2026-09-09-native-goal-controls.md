@@ -44,3 +44,10 @@ The real push failed because the shared hook ran ESLint against T3's Vite+ confi
 The new project-owned prepush command uses Vite+ lint, changed-package typechecks, and changed test files.
 It receives the actual pushed base from the shared hook. It does not repeat the full repository suite.
 The task runs the repository formatter and the shared policy hooks. Neither hook is skipped.
+
+The packaged server served its client and JavaScript asset in an isolated temporary home.
+Its authenticated goal RPC returned the expected missing-thread error. A read-only credential was denied before provider routing.
+The owned server stopped afterward. No shared state or browser was used.
+Vite+ repository hooks now delegate to configured global policy hooks after the repository formatter.
+A real shell check proved argument/stdin preservation, failure propagation, and the recursion guard.
+This preserves policy checks after dependency setup selects Vite+ hooks.
