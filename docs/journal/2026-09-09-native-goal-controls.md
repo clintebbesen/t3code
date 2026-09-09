@@ -36,3 +36,11 @@ Provider routing tests passed, including unsupported-provider refusal, recovery 
 Server, web, mobile, contracts, and client-runtime typechecks passed. Targeted lint passed with one pre-existing unused import warning in ws.ts.
 Rendered web/mobile acceptance, packaged application acceptance, CI, merge, and deployment remain unfinished.
 No PR exists. The project requires an explicit PR request. Browser testing permission is pending under its AGENTS.md.
+
+## Packaging and push correction
+
+The combined web and CLI build passed. Packaged runtime acceptance remains unfinished.
+The real push failed because the shared hook ran ESLint against T3's Vite+ configuration.
+The new project-owned prepush command uses Vite+ lint, changed-package typechecks, and changed test files.
+It receives the actual pushed base from the shared hook. It does not repeat the full repository suite.
+The task runs the repository formatter and the shared policy hooks. Neither hook is skipped.
