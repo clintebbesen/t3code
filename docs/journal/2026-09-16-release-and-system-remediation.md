@@ -15,3 +15,7 @@ Work is continuing. The named DevBoard and agent-harness merge requests were alr
 ## Finding
 
 The project-level Codex configuration enabled the optional Xcode MCP server for every provider session. That server is unrelated to this web project and can delay or distort opposing-family review tool discovery. The setting is now disabled locally; Xcode remains available through an explicit project that enables it.
+
+## Continuation request
+
+> Do not stop. Continue that goal until it is finished.
