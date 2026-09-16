@@ -19,3 +19,7 @@ The project-level Codex configuration enabled the optional Xcode MCP server for 
 ## Continuation request
 
 > Do not stop. Continue that goal until it is finished.
+
+## Worktree recovery finding
+
+The live QFLP checkout had a valid `.git` directory configured with `core.bare=true`. T3 therefore classified it as an unknown VCS and repeatedly failed pull request settlement. The metadata now has `core.bare=false` and an explicit worktree path. After the T3 service restart, no new `VcsUnsupportedOperationError` appeared.
