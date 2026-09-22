@@ -59,6 +59,8 @@ const RECOVERABLE_THREAD_RESUME_ERROR_SNIPPETS = [
   "unknown thread",
   "does not exist",
 ];
+const CODEX_CAPACITY_RETRY_DELAY_MS = 30_000;
+const CODEX_CAPACITY_RETRY_LIMIT = 5;
 
 export function hasConfiguredMcpServer(appServerArgs: ReadonlyArray<string> | undefined): boolean {
   return appServerArgs?.some((argument) => argument.includes("mcp_servers.")) === true;
@@ -858,6 +860,10 @@ export const makeCodexSessionRuntime = (
     /** Child provider-thread id → its currently running provider turn id. */
     const collabChildLiveTurnsRef = yield* Ref.make(new Map<string, string>());
     const closedRef = yield* Ref.make(false);
+    const capacityRetryRef = yield* Ref.make<{
+      readonly params: CodexTurnStartParamsWithCollaborationMode;
+      readonly attempt: number;
+    } | null>(null);
 
     // `~` is not shell-expanded when env vars are set via
     // `child_process.spawn`; `expandHomePath` lets a configured
@@ -1370,6 +1376,58 @@ export const makeCodexSessionRuntime = (
 
     const currentSessionProviderThreadId = Effect.map(Ref.get(sessionRef), currentProviderThreadId);
 
+    const retryCapacityTurn = (
+      params: CodexTurnStartParamsWithCollaborationMode,
+      attempt: number,
+    ) =>
+      Effect.gen(function* () {
+        yield* Effect.sleep(`${CODEX_CAPACITY_RETRY_DELAY_MS} millis`);
+        const pending = yield* Ref.get(capacityRetryRef);
+        if (
+          pending?.params !== params ||
+          pending.attempt !== attempt ||
+          (yield* Ref.get(closedRef))
+        ) {
+          return;
+        }
+        const rawResponse = yield* client.raw.request("turn/start", params).pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("Codex automatic capacity retry failed.", {
+              attempt,
+              cause,
+            }).pipe(Effect.as(null)),
+          ),
+        );
+        if (rawResponse === null) {
+          return;
+        }
+        const response = yield* decodeV2TurnStartResponse(rawResponse).pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("Codex automatic capacity retry returned an invalid response.", {
+              attempt,
+              cause,
+            }).pipe(Effect.as(null)),
+          ),
+        );
+        if (response === null) {
+          return;
+        }
+        yield* Ref.set(capacityRetryRef, null);
+        yield* updateSession(sessionRef, {
+          status: "running",
+          activeTurnId: TurnId.make(response.turn.id),
+        });
+      }).pipe(Effect.forkIn(runtimeScope), Effect.asVoid);
+
+    const isCapacityError = (message: string) => {
+      const normalized = message.toLowerCase();
+      return (
+        normalized.includes("selected model is at capacity") ||
+        normalized.includes("server_is_overloaded") ||
+        normalized.includes("servers are currently overloaded")
+      );
+    };
+
     yield* client.handleServerNotification("thread/started", (payload) =>
       currentSessionProviderThreadId.pipe(
         Effect.flatMap((providerThreadId) => {
@@ -1418,18 +1476,30 @@ export const makeCodexSessionRuntime = (
 
     yield* client.handleServerNotification("error", (payload) =>
       currentSessionProviderThreadId.pipe(
-        Effect.flatMap((providerThreadId) => {
-          const payloadThreadId = payload.threadId;
-          if (providerThreadId && payloadThreadId && payloadThreadId !== providerThreadId) {
-            return Effect.void;
-          }
-          const errorMessage = payload.error.message;
-          const willRetry = payload.willRetry;
-          return updateSession(sessionRef, {
-            status: willRetry ? "running" : "error",
-            ...(errorMessage ? { lastError: errorMessage } : {}),
-          });
-        }),
+        Effect.flatMap((providerThreadId) =>
+          Effect.gen(function* () {
+            const payloadThreadId = payload.threadId;
+            if (providerThreadId && payloadThreadId && payloadThreadId !== providerThreadId) {
+              return yield* Effect.void;
+            }
+            const errorMessage = payload.error.message;
+            const willRetry = payload.willRetry;
+            if (!willRetry && isCapacityError(errorMessage)) {
+              const pending = yield* Ref.get(capacityRetryRef);
+              if (pending && pending.attempt < CODEX_CAPACITY_RETRY_LIMIT) {
+                yield* Ref.set(capacityRetryRef, {
+                  params: pending.params,
+                  attempt: pending.attempt + 1,
+                });
+                yield* retryCapacityTurn(pending.params, pending.attempt + 1);
+              }
+            }
+            return yield* updateSession(sessionRef, {
+              status: willRetry ? "running" : "error",
+              ...(errorMessage ? { lastError: errorMessage } : {}),
+            });
+          }),
+        ),
       ),
     );
 
@@ -1727,6 +1797,7 @@ export const makeCodexSessionRuntime = (
       if (alreadyClosed) {
         return;
       }
+      yield* Ref.set(capacityRetryRef, null);
       yield* settlePendingApprovals("cancel");
       yield* settlePendingUserInputs({});
       yield* updateSession(sessionRef, {
@@ -1771,6 +1842,7 @@ export const makeCodexSessionRuntime = (
             ...(input.effort ? { effort: input.effort } : {}),
             ...(input.interactionMode ? { interactionMode: input.interactionMode } : {}),
           });
+          yield* Ref.set(capacityRetryRef, { params, attempt: 0 });
           const rawResponse = yield* client.raw.request("turn/start", params);
           const response = yield* decodeV2TurnStartResponse(rawResponse).pipe(
             Effect.mapError((error) =>
@@ -1803,6 +1875,7 @@ export const makeCodexSessionRuntime = (
         Effect.gen(function* () {
           const providerThreadId = yield* readProviderThreadId;
           const session = yield* Ref.get(sessionRef);
+          yield* Ref.set(capacityRetryRef, null);
           // Stop-everything: children are full threads with their own turns;
           // interrupting only the parent leaves the fleet running. Interrupt
           // each live child turn first, best-effort per child, BOUNDED: the
