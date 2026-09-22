@@ -1,3 +1,5 @@
+import { decodeInputOrValidationError, toValidationError } from "./ProviderControlValidation.ts";
+import { makeProviderSessionControls } from "./ProviderSessionControls.ts";
 /**
  * ProviderServiceLive - Cross-provider orchestration layer.
  *
@@ -32,7 +34,6 @@ import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
-import * as SchemaIssue from "effect/SchemaIssue";
 import * as Stream from "effect/Stream";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
@@ -57,6 +58,7 @@ import * as ProviderEventLoggers from "./ProviderEventLoggers.ts";
 import * as AnalyticsService from "../../telemetry/AnalyticsService.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
+import * as ServerSettings from "../../serverSettings.ts";
 const isModelSelection = Schema.is(ModelSelection);
 
 /**
@@ -66,6 +68,15 @@ const isModelSelection = Schema.is(ModelSelection);
  */
 export interface ProviderServiceLiveOptions {
   readonly canonicalEventLogger?: EventNdjsonLogger;
+  /**
+   * Overrides MCP credential issuance. The real issuer reads a module-global
+   * registry that only a running MCP server installs, which makes the
+   * agent-browser-access gate unobservable from a unit test; this seam lets a
+   * test see whether a credential was requested at all.
+   */
+  readonly issueMcpCredential?: typeof McpSessionRegistry.issueActiveMcpCredential;
+  /** Same seam as `issueMcpCredential`, for observing the deny path's revoke. */
+  readonly revokeMcpCredential?: typeof McpSessionRegistry.revokeActiveMcpThread;
 }
 
 type ProviderServiceMethod<Name extends keyof ProviderService.ProviderService["Service"]> =
@@ -75,36 +86,6 @@ const ProviderRollbackConversationInput = Schema.Struct({
   threadId: ThreadId,
   numTurns: NonNegativeInt,
 });
-
-function toValidationError(
-  operation: string,
-  issue: string,
-  cause?: unknown,
-): ProviderValidationError {
-  return new ProviderValidationError({
-    operation,
-    issue,
-    ...(cause !== undefined ? { cause } : {}),
-  });
-}
-
-const decodeInputOrValidationError = <S extends Schema.Top>(input: {
-  readonly operation: string;
-  readonly schema: S;
-  readonly payload: unknown;
-}) => {
-  const decodeProviderRequestInput = Schema.decodeUnknownEffect(input.schema);
-  return decodeProviderRequestInput(input.payload).pipe(
-    Effect.mapError(
-      (schemaError) =>
-        new ProviderValidationError({
-          operation: input.operation,
-          issue: SchemaIssue.makeFormatterDefault()(schemaError.issue),
-          cause: schemaError,
-        }),
-    ),
-  );
-};
 
 function toRuntimeStatus(session: ProviderSession): "starting" | "running" | "stopped" | "error" {
   switch (session.status) {
@@ -215,16 +196,58 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
 
   const registry = yield* ProviderAdapterRegistry.ProviderAdapterRegistry;
   const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+  const serverSettings = yield* ServerSettings.ServerSettingsService;
+  const issueMcpCredential =
+    options?.issueMcpCredential ?? McpSessionRegistry.issueActiveMcpCredential;
+  const revokeMcpCredential =
+    options?.revokeMcpCredential ?? McpSessionRegistry.revokeActiveMcpThread;
   const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
+  /**
+   * Attach the `t3-code` MCP server to the session that is about to start.
+   *
+   * This is the only place a credential is minted, so withholding one here is
+   * what disables agent browser access everywhere: every adapter already
+   * treats a missing session as "no MCP server", and the `/mcp` endpoint
+   * accepts nothing but tokens issued from this path.
+   */
+  /**
+   * Deny on an unreadable settings file rather than letting the read failure
+   * escape: adding `ServerSettingsError` to `ProviderServiceError` would widen
+   * a union every caller handles, for a branch that only decides whether one
+   * optional toolset is attached. Denying is the safe direction — an explicit
+   * "off" silently becoming "on" would violate the user's stated choice,
+   * whereas the reverse costs an agent one toolset and is visible immediately.
+   */
+  const agentBrowserAccessEnabled = serverSettings.getSettings.pipe(
+    Effect.map((settings) => settings.enableAgentBrowserAccess),
+    Effect.catch((cause) =>
+      Effect.logWarning(
+        "Could not read server settings; withholding agent browser access for this session.",
+        { cause },
+      ).pipe(Effect.as(false)),
+    ),
+  );
+
   const prepareMcpSession = (threadId: ThreadId, providerInstanceId: ProviderInstanceId) =>
-    McpSessionRegistry.issueActiveMcpCredential({ threadId, providerInstanceId }).pipe(
-      Effect.tap((credential) =>
-        credential
-          ? Effect.sync(() => McpProviderSession.setMcpProviderSession(credential.config))
-          : Effect.void,
-      ),
-    );
+    Effect.gen(function* () {
+      if (!(yield* agentBrowserAccessEnabled)) {
+        // Revoke as well as clear. Every other prepare path reaches
+        // `issueActiveMcpCredential`, which revokes the thread first, so
+        // skipping it here would leave a previously issued bearer token valid
+        // against `/mcp` for the rest of its liveness window — and later turns
+        // would keep refreshing it. A session restart (runtime mode, cwd,
+        // model) re-prepares without stopping, so it relies on this.
+        yield* revokeMcpCredential(threadId);
+        yield* Effect.sync(() => McpProviderSession.clearMcpProviderSession(threadId));
+        return undefined;
+      }
+      const credential = yield* issueMcpCredential({ threadId, providerInstanceId });
+      if (credential) {
+        yield* Effect.sync(() => McpProviderSession.setMcpProviderSession(credential.config));
+      }
+      return credential;
+    });
   const clearMcpSession = (threadId: ThreadId) =>
     McpSessionRegistry.revokeActiveMcpThread(threadId).pipe(
       Effect.tap(() => Effect.sync(() => McpProviderSession.clearMcpProviderSession(threadId))),
@@ -676,13 +699,12 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       );
     }
 
-    // Adapters inline attachment pixels into the model prompt, but the model's
-    // tools cannot dereference pixels. Appending the on-disk path is what lets
-    // a turn like "include this screenshot in the PR" copy the actual file.
-    // This runs after schema decode, so the appended lines are exempt from the
-    // PROVIDER_SEND_TURN_MAX_INPUT_CHARS check; attachment count is capped, so
-    // the overhead is bounded. Unresolvable ids are skipped here and surface
-    // as adapter errors when the file is read for inlining.
+    // Every attachment gets an on-disk path in the prompt so the model's tools
+    // can dereference the actual file. All attachments then go to the adapter,
+    // and each adapter decides what its provider ingests natively: OpenCode
+    // sends generic files as file parts, the others send images only and rely
+    // on the path line for everything else. Unresolvable ids are skipped here
+    // and surface as adapter errors when the file is read.
     const attachmentPathLines = attachments.flatMap((attachment) => {
       const attachmentPath = resolveAttachmentPath({
         attachmentsDir: serverConfig.attachmentsDir,
@@ -704,13 +726,12 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       ...(inputTextWithAttachmentPaths !== undefined
         ? { input: inputTextWithAttachmentPaths }
         : {}),
-      attachments,
     };
     yield* Effect.annotateCurrentSpan({
       "provider.operation": "send-turn",
       "provider.thread_id": input.threadId,
       "provider.interaction_mode": input.interactionMode,
-      "provider.attachment_count": input.attachments.length,
+      "provider.attachment_count": attachments.length,
     });
     let metricProvider = "unknown";
     let metricModel = input.modelSelection?.model;
@@ -754,7 +775,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         // often, since every toggle restarts the session. Recording it per turn
         // gives a usage-weighted view and lets it cross with interactionMode.
         runtimeMode: routed.runtimeMode,
-        attachmentCount: input.attachments.length,
+        attachmentCount: attachments.length,
         hasInput: typeof input.input === "string" && input.input.trim().length > 0,
       });
       return turn;
@@ -1065,6 +1086,8 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     );
   });
 
+  const { uploadFeedback, controlGoal } = makeProviderSessionControls(resolveRoutableSession);
+
   const runStopAll = Effect.fn("runStopAll")(function* () {
     const threadIds = yield* directory.listThreadIds();
     const currentAdapters = yield* getAdapterEntries;
@@ -1136,6 +1159,8 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     getCapabilities,
     getInstanceInfo,
     rollbackConversation,
+    uploadFeedback,
+    controlGoal,
     // Each access creates a fresh PubSub subscription so that multiple
     // consumers (ProviderRuntimeIngestion, CheckpointReactor, etc.) each
     // independently receive all runtime events.

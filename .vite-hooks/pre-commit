@@ -1,1 +1,2 @@
 vp staged
+sh scripts/run-global-hook.sh pre-commit "$@"

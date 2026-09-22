@@ -13,6 +13,8 @@
  */
 import type {
   ProviderInterruptTurnInput,
+  ProviderGoalInput,
+  ProviderGoalResult,
   ProviderInstanceId,
   ProviderRespondToRequestInput,
   ProviderRespondToUserInputInput,
@@ -21,6 +23,8 @@ import type {
   ProviderSession,
   ProviderSessionStartInput,
   ProviderStopSessionInput,
+  ProviderUploadFeedbackInput,
+  ProviderUploadFeedbackResult,
   ThreadId,
   ProviderTurnStartResult,
 } from "@t3tools/contracts";
@@ -36,6 +40,9 @@ import type { ProviderInstanceRoutingInfo } from "./ProviderAdapterRegistry.ts";
  * ProviderServiceShape - Service API for provider session and turn orchestration.
  */
 export interface ProviderServiceShape {
+  readonly controlGoal?: (
+    input: ProviderGoalInput,
+  ) => Effect.Effect<ProviderGoalResult, ProviderServiceError>;
   /**
    * Start a provider session.
    */
@@ -104,6 +111,13 @@ export interface ProviderServiceShape {
     readonly threadId: ThreadId;
     readonly numTurns: number;
   }) => Effect.Effect<void, ProviderServiceError>;
+
+  /**
+   * Upload a thread and return the provider's shareable feedback identifier.
+   */
+  readonly uploadFeedback: (
+    input: ProviderUploadFeedbackInput,
+  ) => Effect.Effect<ProviderUploadFeedbackResult, ProviderServiceError>;
 
   /**
    * Canonical provider runtime event stream.
