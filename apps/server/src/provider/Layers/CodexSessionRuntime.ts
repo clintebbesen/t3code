@@ -1910,26 +1910,8 @@ export const makeCodexSessionRuntime = (
       client,
       aliases: capacityTurnAliases,
       update: (patch) => updateSession(sessionRef, patch),
-      terminal: (turnId, error) =>
-        Effect.gen(function* () {
-          if (error)
-            yield* emitEvent({
-              kind: "error",
-              threadId: options.threadId,
-              method: "capacity/retryFailed",
-              message: error,
-              ...(turnId ? { turnId: TurnId.make(turnId) } : {}),
-            });
-          yield* emitEvent({
-            kind: "notification",
-            threadId: options.threadId,
-            method: "turn/aborted",
-            message: error ?? "Stopped automatic capacity recovery",
-            ...(turnId ? { turnId: TurnId.make(turnId) } : {}),
-          });
-        }),
+      terminal: CodexCapacityRetry.makeTerminalEmitter(emitEvent, options.threadId),
     });
-
     const handleRawNotification = (notification: CodexServerNotification) =>
       Effect.gen(function* () {
         const isMemoryConsolidationNotification =

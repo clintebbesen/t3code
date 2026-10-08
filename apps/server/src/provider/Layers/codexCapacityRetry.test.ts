@@ -1,36 +1,58 @@
 import * as NodeAssert from "node:assert/strict";
 import { it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Deferred from "effect/Deferred";
+import * as CodexErrors from "effect-codex-app-server/errors";
 import * as TestClock from "effect/testing/TestClock";
 import { describe } from "vite-plus/test";
 import { buildTurnStartParams } from "./CodexSessionRuntime.ts";
 import { makeCapacityRetry } from "./codexCapacityRetry.ts";
 
-const fixture = Effect.gen(function* () {
-  const calls: unknown[] = [];
-  const retry = yield* makeCapacityRetry({
-    client: {
-      request: () => Effect.die("unused"),
-      raw: {
+const makeFixture = (errors: string[] = [], gate?: Deferred.Deferred<unknown>) =>
+  Effect.gen(function* () {
+    const calls: unknown[] = [];
+    const interrupts: unknown[] = [];
+    const terminals: unknown[] = [];
+    const aliases = new Map<string, string>();
+    const retry = yield* makeCapacityRetry({
+      client: {
         request: (_method, params) =>
           Effect.sync(() => {
-            calls.push(params);
-            return { turn: { id: "retry-turn", status: "inProgress", items: [], error: null } };
-          }),
+            interrupts.push(params);
+            return {};
+          }) as never,
+        raw: {
+          request: (_method, params) =>
+            Effect.gen(function* () {
+              calls.push(params);
+              const error = errors.shift();
+              if (error)
+                return yield* new CodexErrors.CodexAppServerRequestError({
+                  code: -32000,
+                  errorMessage: error,
+                });
+              if (gate) return yield* Deferred.await(gate);
+              return { turn: { id: "retry-turn", status: "inProgress", items: [], error: null } };
+            }),
+        },
       },
-    },
-    aliases: new Map(),
-    update: () => Effect.void,
-    terminal: () => Effect.void,
+      aliases,
+      update: () => Effect.void,
+      terminal: (turnId, error) =>
+        Effect.sync(() => {
+          terminals.push({ turnId, error });
+        }),
+    });
+    const params = yield* buildTurnStartParams({
+      threadId: "thread",
+      runtimeMode: "full-access",
+      prompt: "Original task",
+    });
+    yield* retry.begin(params);
+    yield* retry.accept("original-turn");
+    return { retry, calls, params, interrupts, terminals, aliases };
   });
-  const params = yield* buildTurnStartParams({
-    threadId: "thread",
-    runtimeMode: "full-access",
-    prompt: "Original task",
-  });
-  yield* retry.begin(params);
-  return { retry, calls, params };
-});
+const fixture = makeFixture();
 
 describe("Codex capacity recovery", () => {
   it.effect("waits 30 seconds and schedules only one retry per failed turn", () =>
@@ -91,6 +113,45 @@ describe("Codex capacity recovery", () => {
       }
       NodeAssert.equal(calls.length, 5);
       NodeAssert.equal(yield* retry.schedule("server_is_overloaded", false), false);
+    }),
+  );
+  it.effect("retries a capacity RPC rejection but settles ordinary RPC failure", () =>
+    Effect.gen(function* () {
+      const { retry, calls, terminals } = yield* makeFixture([
+        "server_is_overloaded",
+        "connection reset",
+      ]);
+      yield* retry.schedule("server_is_overloaded", false);
+      yield* TestClock.adjust("30 seconds");
+      NodeAssert.equal(calls.length, 1);
+      NodeAssert.equal(terminals.length, 0);
+      yield* TestClock.adjust("30 seconds");
+      NodeAssert.equal(calls.length, 2);
+      NodeAssert.deepEqual(terminals, [{ turnId: "original-turn", error: "connection reset" }]);
+    }),
+  );
+  it.effect("interrupts a retry accepted after Stop and preserves its logical turn", () =>
+    Effect.gen(function* () {
+      const gate = yield* Deferred.make<unknown>();
+      const { retry, calls, interrupts, terminals } = yield* makeFixture([], gate);
+      yield* retry.schedule("server_is_overloaded", false);
+      yield* TestClock.adjust("30 seconds");
+      NodeAssert.equal(calls.length, 1);
+      yield* retry.cancel;
+      yield* Deferred.succeed(gate, {
+        turn: { id: "retry-turn", status: "inProgress", items: [], error: null },
+      });
+      yield* Effect.yieldNow;
+      NodeAssert.deepEqual(terminals, [{ turnId: "original-turn", error: undefined }]);
+      NodeAssert.deepEqual(interrupts, [{ threadId: "thread", turnId: "retry-turn" }]);
+    }),
+  );
+  it.effect("maps recovery provider turns to the original accepted logical turn", () =>
+    Effect.gen(function* () {
+      const { retry, aliases } = yield* fixture;
+      yield* retry.schedule("server_is_overloaded", false);
+      yield* TestClock.adjust("30 seconds");
+      NodeAssert.equal(aliases.get("retry-turn"), "original-turn");
     }),
   );
 });

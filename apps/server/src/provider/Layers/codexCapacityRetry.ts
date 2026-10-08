@@ -1,8 +1,14 @@
-import { type ProviderSession, TurnId } from "@t3tools/contracts";
+import {
+  type ProviderSession,
+  type ProviderEvent,
+  type ThreadId,
+  TurnId,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
+import type * as CodexErrors from "effect-codex-app-server/errors";
 import type * as CodexClient from "effect-codex-app-server/client";
 import * as CodexSchema from "effect-codex-app-server/schema";
 import type { CodexTurnStartParamsWithCollaborationMode } from "./CodexSessionRuntime.ts";
@@ -29,7 +35,7 @@ export const makeCapacityRetry = Effect.fn("CodexCapacityRetry.make")(function* 
   };
   readonly aliases: Map<string, string>;
   readonly update: (patch: Partial<ProviderSession>) => Effect.Effect<void>;
-  readonly terminal: (turnId: string | undefined, error?: string) => Effect.Effect<void, unknown>;
+  readonly terminal: (turnId: string | undefined, error?: string) => Effect.Effect<void>;
 }) {
   const scope = yield* Scope.Scope;
   const state = yield* Ref.make<Pending | undefined>(undefined);
@@ -176,3 +182,34 @@ export const registerCodexLifecycle = Effect.fn("CodexCapacityRetry.registerLife
     }),
   );
 });
+
+export const makeTerminalEmitter =
+  (
+    emit: (
+      event: Omit<ProviderEvent, "id" | "provider" | "createdAt">,
+    ) => Effect.Effect<void, CodexErrors.CodexAppServerIdentifierGenerationError>,
+    threadId: ThreadId,
+  ) =>
+  (turnId: string | undefined, error?: string) =>
+    Effect.gen(function* () {
+      const turn = turnId ? { turnId: TurnId.make(turnId) } : {};
+      if (error)
+        yield* emit({
+          kind: "error",
+          threadId,
+          method: "capacity/retryFailed",
+          message: error,
+          ...turn,
+        });
+      yield* emit({
+        kind: "notification",
+        threadId,
+        method: "turn/aborted",
+        message: error ?? "Stopped automatic capacity recovery",
+        ...turn,
+      });
+    }).pipe(
+      Effect.catch((cause) =>
+        Effect.logError("Could not emit capacity recovery terminal event", { cause }),
+      ),
+    );
