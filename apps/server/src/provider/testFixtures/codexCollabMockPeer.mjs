@@ -163,6 +163,11 @@ rl.on("line", (line) => {
     return;
   }
   if (method === "turn/start") {
+    if (script.turnStartErrors?.[turnStartCount]) {
+      write({ id, error: { code: -32000, message: script.turnStartErrors[turnStartCount] } });
+      turnStartCount += 1;
+      return;
+    }
     const turnId = script.turnIds?.[turnStartCount];
     const turn = turnId
       ? { ...fixture.responses.turnStart.turn, id: turnId }
@@ -178,7 +183,8 @@ rl.on("line", (line) => {
         params: { threadId: rootThreadId, turn },
       });
     }
-    for (const notification of script.notifications) {
+    for (const notification of script.notificationsByTurn?.[turnStartCount - 1] ??
+      script.notifications) {
       write({ jsonrpc: "2.0", method: notification.method, params: notification.params });
     }
     for (const [index, request] of (script.serverRequests ?? []).entries()) {
@@ -200,7 +206,7 @@ rl.on("line", (line) => {
       );
       write({ jsonrpc: "2.0", id: requestId, method: request.method, params });
     }
-    if (script.holdTurnOpen !== true) {
+    if (script.holdTurnOpen !== true && script.holdTurns?.[turnStartCount - 1] !== true) {
       write({
         jsonrpc: "2.0",
         method: "turn/completed",

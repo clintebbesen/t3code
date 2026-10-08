@@ -39,6 +39,7 @@ import * as EffectCodexSchema from "effect-codex-app-server/schema";
 
 import { buildCodexInitializeParams } from "./CodexProvider.ts";
 import { codexSessionAppServerArgs } from "./codexLaunchArgs.ts";
+import * as CodexCapacityRetry from "./codexCapacityRetry.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
 import {
   buildCodexAdditionalContext,
@@ -1393,6 +1394,7 @@ export const makeCodexSessionRuntime = (
     const sessionRef = yield* Ref.make<ProviderSession>(initialSession);
     const offerEvent = (event: ProviderEvent) => Queue.offer(events, event).pipe(Effect.asVoid);
 
+    const capacityTurnAliases = new Map<string, string>();
     const emitEvent = (event: Omit<ProviderEvent, "id" | "provider" | "createdAt">) =>
       Effect.gen(function* () {
         const id = yield* randomUUIDv4("provider-event");
@@ -1402,6 +1404,9 @@ export const makeCodexSessionRuntime = (
           ...(options.providerInstanceId ? { providerInstanceId: options.providerInstanceId } : {}),
           createdAt: yield* nowIso,
           ...event,
+          ...(event.turnId
+            ? { turnId: TurnId.make(capacityTurnAliases.get(event.turnId) ?? event.turnId) }
+            : {}),
         });
       });
     const emitSessionEvent = (method: string, message: string) =>
@@ -1901,12 +1906,18 @@ export const makeCodexSessionRuntime = (
         ),
       );
 
+    const capacityRetry = yield* CodexCapacityRetry.makeCapacityRetry({
+      client,
+      aliases: capacityTurnAliases,
+      update: (patch) => updateSession(sessionRef, patch),
+      terminal: CodexCapacityRetry.makeTerminalEmitter(emitEvent, options.threadId),
+    });
     const handleRawNotification = (notification: CodexServerNotification) =>
       Effect.gen(function* () {
         const isMemoryConsolidationNotification =
           suppressMemoryConsolidationNotification(notification);
 
-        const payload = notification.params;
+        let payload = notification.params;
         const route = readRouteFields(notification);
         const collabReceiverTurns = yield* Ref.get(collabReceiverTurnsRef);
         const childParentTurnId = (() => {
@@ -1983,6 +1994,20 @@ export const makeCodexSessionRuntime = (
           return;
         }
 
+        if (
+          notification.method === "error" &&
+          (!notification.params.threadId || notification.params.threadId === suppressRootId) &&
+          (yield* capacityRetry.waiting)
+        ) {
+          payload = { ...notification.params, willRetry: true };
+        }
+        if (
+          notification.method === "turn/completed" &&
+          notification.params.turn.status === "failed" &&
+          (yield* capacityRetry.waiting)
+        )
+          return;
+
         if (isMemoryConsolidationNotification) {
           return;
         }
@@ -2052,54 +2077,11 @@ export const makeCodexSessionRuntime = (
       ),
     );
 
-    yield* client.handleServerNotification("turn/started", (payload) =>
-      currentSessionProviderThreadId.pipe(
-        Effect.flatMap((providerThreadId) => {
-          if (providerThreadId && payload.threadId !== providerThreadId) {
-            return Effect.void;
-          }
-          return updateSession(sessionRef, {
-            status: "running",
-            activeTurnId: TurnId.make(payload.turn.id),
-          });
-        }),
-      ),
-    );
-
-    yield* client.handleServerNotification("turn/completed", (payload) =>
-      currentSessionProviderThreadId.pipe(
-        Effect.flatMap((providerThreadId) => {
-          if (providerThreadId && payload.threadId !== providerThreadId) {
-            return Effect.void;
-          }
-          const lastError =
-            payload.turn.status === "failed" && "error" in payload.turn && payload.turn.error
-              ? payload.turn.error.message
-              : undefined;
-          return updateSession(sessionRef, {
-            status: payload.turn.status === "failed" ? "error" : "ready",
-            activeTurnId: undefined,
-            ...(lastError ? { lastError } : {}),
-          });
-        }),
-      ),
-    );
-
-    yield* client.handleServerNotification("error", (payload) =>
-      currentSessionProviderThreadId.pipe(
-        Effect.flatMap((providerThreadId) => {
-          const payloadThreadId = payload.threadId;
-          if (providerThreadId && payloadThreadId && payloadThreadId !== providerThreadId) {
-            return Effect.void;
-          }
-          const errorMessage = payload.error.message;
-          const willRetry = payload.willRetry;
-          return updateSession(sessionRef, {
-            status: willRetry ? "running" : "error",
-            ...(errorMessage ? { lastError: errorMessage } : {}),
-          });
-        }),
-      ),
+    yield* CodexCapacityRetry.registerCodexLifecycle(
+      client,
+      currentSessionProviderThreadId,
+      (patch) => updateSession(sessionRef, patch),
+      capacityRetry,
     );
 
     yield* client.handleServerRequest("item/commandExecution/requestApproval", (payload) =>
@@ -2520,6 +2502,7 @@ export const makeCodexSessionRuntime = (
     });
 
     const close = Effect.gen(function* () {
+      yield* capacityRetry.cancel;
       const alreadyClosed = yield* Ref.getAndSet(closedRef, true);
       if (alreadyClosed) {
         return;
@@ -2582,6 +2565,7 @@ export const makeCodexSessionRuntime = (
               options.mcpCapabilities,
             ),
           });
+          yield* capacityRetry.begin(params);
           yield* Ref.set(lastAdditionalContextRef, params.additionalContext);
           const rawResponse = yield* client.raw.request("turn/start", params);
           const response = yield* decodeV2TurnStartResponse(rawResponse).pipe(
@@ -2593,6 +2577,7 @@ export const makeCodexSessionRuntime = (
               ),
             ),
           );
+          yield* capacityRetry.accept(response.turn.id);
           const turnId = TurnId.make(response.turn.id);
           yield* updateSession(sessionRef, (session) => ({
             status: "running",
@@ -2613,6 +2598,7 @@ export const makeCodexSessionRuntime = (
         }),
       interruptTurn: (turnId) =>
         Effect.gen(function* () {
+          const cancelledCapacityRetry = yield* capacityRetry.cancel;
           const providerThreadId = yield* readProviderThreadId;
           const session = yield* Ref.get(sessionRef);
           // Settle parked approvals FIRST. The transport answers server
@@ -2645,6 +2631,7 @@ export const makeCodexSessionRuntime = (
                 .pipe(Effect.timeoutOption("3 seconds"), Effect.ignore),
             { concurrency: 8, discard: true },
           ).pipe(Effect.timeoutOption("10 seconds"), Effect.ignore);
+          if (cancelledCapacityRetry) return;
           const effectiveTurnId = turnId ?? session.activeTurnId;
           if (!effectiveTurnId) {
             return;
