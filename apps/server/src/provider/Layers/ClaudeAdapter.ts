@@ -1954,10 +1954,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       return;
     }
 
-    const orderedBlocks = turnState.assistantTextBlockOrder.map((block) => ({
-      blockIndex: block.blockIndex,
-      block,
-    }));
+    const orderedBlocks = turnState.assistantTextBlockOrder
+      .filter((block) => !block.completionEmitted)
+      .map((block) => ({
+        blockIndex: block.blockIndex,
+        block,
+      }));
 
     for (const [position, text] of snapshotTextBlocks.entries()) {
       const existingEntry = orderedBlocks[position];
