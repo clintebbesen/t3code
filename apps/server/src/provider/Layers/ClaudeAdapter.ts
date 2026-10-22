@@ -159,6 +159,8 @@ interface AssistantTextBlockState {
   fallbackText: string;
   streamClosed: boolean;
   completionEmitted: boolean;
+  snapshotMessageId?: string;
+  snapshotPosition?: number;
 }
 
 interface PendingApproval {
@@ -1368,7 +1370,7 @@ function nativeProviderRefs(
   return {};
 }
 
-function extractAssistantTextBlocks(message: SDKMessage): Array<string> {
+function extractAssistantTextBlocks(message: SDKMessage): Array<{ index: number; text: string }> {
   if (message.type !== "assistant") {
     return [];
   }
@@ -1378,8 +1380,8 @@ function extractAssistantTextBlocks(message: SDKMessage): Array<string> {
     return [];
   }
 
-  const fragments: string[] = [];
-  for (const block of content) {
+  const fragments: Array<{ index: number; text: string }> = [];
+  for (const [index, block] of content.entries()) {
     if (!block || typeof block !== "object") {
       continue;
     }
@@ -1389,7 +1391,7 @@ function extractAssistantTextBlocks(message: SDKMessage): Array<string> {
       typeof candidate.text === "string" &&
       candidate.text.length > 0
     ) {
-      fragments.push(candidate.text);
+      fragments.push({ index, text: candidate.text });
     }
   }
 
@@ -1943,7 +1945,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
   const backfillAssistantTextBlocksFromSnapshot = Effect.fn(
     "backfillAssistantTextBlocksFromSnapshot",
-  )(function* (context: ClaudeSessionContext, message: SDKMessage) {
+  )(function* (context: ClaudeSessionContext, message: Extract<SDKMessage, { type: "assistant" }>) {
     const turnState = context.turnState;
     if (!turnState) {
       return;
@@ -1954,36 +1956,38 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       return;
     }
 
-    const orderedBlocks = turnState.assistantTextBlockOrder
-      .filter((block) => !block.completionEmitted)
-      .map((block) => ({
-        blockIndex: block.blockIndex,
-        block,
-      }));
+    const snapshotMessageId =
+      typeof message.message.id === "string" ? message.message.id : message.uuid;
+    const orderedBlocks = turnState.assistantTextBlockOrder;
 
-    for (const [position, text] of snapshotTextBlocks.entries()) {
-      const existingEntry = orderedBlocks[position];
+    for (const [position, { index, text }] of snapshotTextBlocks.entries()) {
+      const matchingSnapshot = orderedBlocks.findLast(
+        (block) =>
+          block.snapshotMessageId === snapshotMessageId && block.snapshotPosition === position,
+      );
+      const matchingStream = orderedBlocks.findLast(
+        (block) => block.blockIndex === index && block.snapshotMessageId === undefined,
+      );
+      const pendingBlock = orderedBlocks.filter(
+        (block) => !block.completionEmitted && block.snapshotMessageId === undefined,
+      )[position];
       const entry =
-        existingEntry ??
-        (yield* createSyntheticAssistantTextBlock(context, text).pipe(
-          Effect.map((created) => {
-            if (!created) {
-              return undefined;
-            }
-            orderedBlocks.push(created);
-            return created;
-          }),
-        ));
+        matchingSnapshot ??
+        matchingStream ??
+        pendingBlock ??
+        (yield* createSyntheticAssistantTextBlock(context, text))?.block;
       if (!entry) {
         continue;
       }
 
-      if (entry.block.fallbackText.length === 0) {
-        entry.block.fallbackText = text;
+      entry.snapshotMessageId = snapshotMessageId;
+      entry.snapshotPosition = position;
+      if (entry.fallbackText.length === 0) {
+        entry.fallbackText = text;
       }
 
-      if (entry.block.streamClosed && !entry.block.completionEmitted) {
-        yield* completeAssistantTextBlock(context, entry.block, {
+      if (entry.streamClosed && !entry.completionEmitted) {
+        yield* completeAssistantTextBlock(context, entry, {
           rawMethod: "claude/assistant",
           rawPayload: message,
         });

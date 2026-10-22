@@ -3328,10 +3328,10 @@ describe("ClaudeAdapterLive", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
-      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 8).pipe(
-        Stream.runCollect,
-        Effect.forkChild,
-      );
+      const runtimeEventsFiber = yield* Stream.takeUntil(
+        adapter.streamEvents,
+        (event) => event.type === "turn.completed",
+      ).pipe(Stream.runCollect, Effect.forkChild);
       const session = yield* adapter.startSession({
         threadId: THREAD_ID,
         provider: ProviderDriverKind.make("claudeAgent"),
@@ -3365,6 +3365,19 @@ describe("ClaudeAdapterLive", () => {
         },
       });
       emit({
+        type: "assistant",
+        session_id: "sdk-session-later-text",
+        uuid: "assistant-final-repeat",
+        parent_tool_use_id: null,
+        message: {
+          id: "assistant-final-message",
+          content: [
+            { type: "thinking", thinking: "Now I can answer." },
+            { type: "text", text: "Final answer" },
+          ],
+        },
+      });
+      emit({
         type: "result",
         subtype: "success",
         is_error: false,
@@ -3380,6 +3393,85 @@ describe("ClaudeAdapterLive", () => {
       assert.deepEqual(
         textDeltas.map((event) => (event.type === "content.delta" ? event.payload.delta : "")),
         ["Progress", "Final answer"],
+      );
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("does not duplicate streamed text when its thinking-first snapshot arrives", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEventsFiber = yield* Stream.takeUntil(
+        adapter.streamEvents,
+        (event) => event.type === "turn.completed",
+      ).pipe(Stream.runCollect, Effect.forkChild);
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({ threadId: session.threadId, input: "hello", attachments: [] });
+
+      const emit = (message: unknown) => harness.query.emit(message as SDKMessage);
+      const sessionId = "sdk-session-streamed-thinking-text";
+      emit({
+        type: "stream_event",
+        session_id: sessionId,
+        uuid: "start-text",
+        parent_tool_use_id: null,
+        event: { type: "content_block_start", index: 1, content_block: { type: "text", text: "" } },
+      });
+      emit({
+        type: "stream_event",
+        session_id: sessionId,
+        uuid: "text-delta",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_delta",
+          index: 1,
+          delta: { type: "text_delta", text: "Final answer" },
+        },
+      });
+      emit({
+        type: "stream_event",
+        session_id: sessionId,
+        uuid: "stop-text",
+        parent_tool_use_id: null,
+        event: { type: "content_block_stop", index: 1 },
+      });
+      emit({
+        type: "assistant",
+        session_id: sessionId,
+        uuid: "assistant-final",
+        parent_tool_use_id: null,
+        message: {
+          id: "assistant-final-message",
+          content: [
+            { type: "thinking", thinking: "Now I can answer." },
+            { type: "text", text: "Final answer" },
+          ],
+        },
+      });
+      emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: sessionId,
+        uuid: "result-final",
+      });
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      assert.deepEqual(
+        runtimeEvents.flatMap((event) =>
+          event.type === "content.delta" && event.payload.streamKind === "assistant_text"
+            ? [event.payload.delta]
+            : [],
+        ),
+        ["Final answer"],
       );
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
